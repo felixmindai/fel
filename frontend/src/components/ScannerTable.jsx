@@ -166,19 +166,17 @@ function ScannerTable({ results, onRefresh, lastUpdated, onOverrideToggle }) {
               </td>
               
               <td style={{textAlign: 'center'}}>
-                {r.qualified && (
-                  <input 
-                    type="checkbox"
-                    checked={r.override || false}
-                    onChange={(e) => onOverrideToggle(r.symbol, e.target.checked)}
-                    style={{
-                      width: '18px',
-                      height: '18px',
-                      cursor: 'pointer'
-                    }}
-                    title="Check to SKIP buying this stock (override)"
-                  />
-                )}
+                <input 
+                  type="checkbox"
+                  checked={r.override || false}
+                  onChange={(e) => onOverrideToggle(r.symbol, e.target.checked)}
+                  style={{
+                    width: '18px',
+                    height: '18px',
+                    cursor: 'pointer'
+                  }}
+                  title={r.qualified ? "Check to SKIP buying this stock" : "Check to mark as overridden"}
+                />
               </td>
             </tr>
           ))}

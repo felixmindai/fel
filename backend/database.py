@@ -119,9 +119,23 @@ class Database:
                     criteria_8_spy_above_50ma BOOLEAN,
                     qualified BOOLEAN,
                     action VARCHAR(50),
+                    override BOOLEAN DEFAULT false,
                     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                     UNIQUE(scan_date, symbol)
                 )
+            """)
+            
+            # Add override column if it doesn't exist (migration)
+            cursor.execute("""
+                DO $$ 
+                BEGIN
+                    IF NOT EXISTS (
+                        SELECT 1 FROM information_schema.columns 
+                        WHERE table_name='scan_results' AND column_name='override'
+                    ) THEN
+                        ALTER TABLE scan_results ADD COLUMN override BOOLEAN DEFAULT false;
+                    END IF;
+                END $$;
             """)
             
             # Positions - open positions
@@ -456,6 +470,35 @@ class Database:
             
             return [dict(row) for row in cursor.fetchall()]
             
+        finally:
+            cursor.close()
+            conn.close()
+    
+    def update_scan_override(self, symbol: str, override: bool) -> bool:
+        """Update override status for a symbol in today's scan results."""
+        conn = self.get_connection()
+        cursor = conn.cursor()
+        
+        try:
+            today = date.today()
+            cursor.execute("""
+                UPDATE scan_results 
+                SET override = %s
+                WHERE symbol = %s AND scan_date = %s
+            """, (override, symbol, today))
+            
+            if cursor.rowcount > 0:
+                conn.commit()
+                logger.info(f"✅ Updated override for {symbol}: {override}")
+                return True
+            else:
+                logger.warning(f"⚠️ No scan result found for {symbol} on {today}")
+                return False
+            
+        except Exception as e:
+            conn.rollback()
+            logger.error(f"❌ Error updating override for {symbol}: {e}")
+            return False
         finally:
             cursor.close()
             conn.close()

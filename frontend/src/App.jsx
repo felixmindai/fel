@@ -15,11 +15,35 @@ function App() {
   const [ws, setWs] = useState(null);
   const [overrides, setOverrides] = useState({}); // Track which stocks are overridden
 
-  const handleOverrideToggle = (symbol, checked) => {
+  const handleOverrideToggle = async (symbol, checked) => {
+    // Update local state immediately for responsive UI
     setOverrides(prev => ({
       ...prev,
       [symbol]: checked
     }));
+    
+    // Save to backend
+    try {
+      const response = await fetch(`http://localhost:8000/api/scanner/override/${symbol}?override=${checked}`, {
+        method: 'POST'
+      });
+      
+      if (!response.ok) {
+        console.error('Failed to save override');
+        // Revert on failure
+        setOverrides(prev => ({
+          ...prev,
+          [symbol]: !checked
+        }));
+      }
+    } catch (error) {
+      console.error('Error saving override:', error);
+      // Revert on error
+      setOverrides(prev => ({
+        ...prev,
+        [symbol]: !checked
+      }));
+    }
   };
   const [lastUpdated, setLastUpdated] = useState(null);
   const [lastScanUpdate, setLastScanUpdate] = useState(null);

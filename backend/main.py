@@ -362,6 +362,19 @@ async def get_scan_results():
         "qualified_count": sum(1 for r in results if r.get('qualified', False))
     })
 
+@app.post("/api/scanner/override/{symbol}")
+async def update_override(symbol: str, override: bool):
+    """Update override status for a symbol in today's scan results."""
+    try:
+        success = bot_state.db.update_scan_override(symbol, override)
+        if success:
+            return {"success": True, "symbol": symbol, "override": override}
+        else:
+            raise HTTPException(status_code=404, detail=f"No scan result found for {symbol} today")
+    except Exception as e:
+        logger.error(f"Error updating override for {symbol}: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
 @app.post("/api/scanner/run-once")
 async def run_scanner_once():
     """Run scanner once manually."""
