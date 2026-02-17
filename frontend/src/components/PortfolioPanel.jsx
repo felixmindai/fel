@@ -1,11 +1,13 @@
 import React from 'react';
 
+const API_BASE = 'http://localhost:8000/api';
+
 function PortfolioPanel({ positions, config, onRefresh }) {
   const handleClosePosition = async (symbol) => {
     if (!confirm(`Close position in ${symbol}?`)) return;
 
     try {
-      const response = await fetch(`/api/positions/${symbol}`, { method: 'DELETE' });
+      const response = await fetch(`${API_BASE}/positions/${symbol}`, { method: 'DELETE' });
       const data = await response.json();
       
       if (data.success) {

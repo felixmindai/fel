@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef, useCallback } from 'react';
 import './App.css';
 import ScannerTable from './components/ScannerTable';
 import PortfolioPanel from './components/PortfolioPanel';
@@ -6,15 +6,27 @@ import TickerManager from './components/TickerManager';
 import ConfigPanel from './components/ConfigPanel';
 import StatusBar from './components/StatusBar';
 
+const WS_URL = 'ws://localhost:8000/ws';
+const API_BASE = 'http://localhost:8000/api';
+
+// Reconnect delays: 1s, 2s, 4s, 8s, 16s, 30s (capped)
+const getReconnectDelay = (attempt) => Math.min(1000 * Math.pow(2, attempt), 30000);
+
 function App() {
   const [activeTab, setActiveTab] = useState('scanner');
   const [status, setStatus] = useState(null);
   const [scanResults, setScanResults] = useState([]);
   const [positions, setPositions] = useState([]);
   const [config, setConfig] = useState(null);
-  const [ws, setWs] = useState(null);
+  const [wsConnected, setWsConnected] = useState(false);
   const [overrides, setOverrides] = useState({}); // Track which stocks are overridden
   const [entryMethods, setEntryMethods] = useState({}); // Track manually set entry methods
+
+  // Refs so reconnect logic always has latest values without stale closures
+  const wsRef = useRef(null);
+  const reconnectAttemptRef = useRef(0);
+  const reconnectTimerRef = useRef(null);
+  const unmountedRef = useRef(false);
 
   const handleOverrideToggle = async (symbol, checked) => {
     // Update local state immediately for responsive UI
@@ -22,13 +34,13 @@ function App() {
       ...prev,
       [symbol]: checked
     }));
-    
+
     // Save to backend
     try {
-      const response = await fetch(`http://localhost:8000/api/scanner/override/${symbol}?override=${checked}`, {
+      const response = await fetch(`${API_BASE}/scanner/override/${symbol}?override=${checked}`, {
         method: 'POST'
       });
-      
+
       if (!response.ok) {
         console.error('Failed to save override');
         // Revert on failure
@@ -53,13 +65,13 @@ function App() {
       ...prev,
       [symbol]: method
     }));
-    
+
     // Save to backend
     try {
-      const response = await fetch(`http://localhost:8000/api/scanner/entry-method/${symbol}?entry_method=${method}`, {
+      const response = await fetch(`${API_BASE}/scanner/entry-method/${symbol}?entry_method=${method}`, {
         method: 'POST'
       });
-      
+
       if (!response.ok) {
         console.error('Failed to save entry method');
         // Revert on failure
@@ -87,13 +99,13 @@ function App() {
       delete newState[symbol];
       return newState;
     });
-    
+
     // Clear in backend (set to NULL)
     try {
-      const response = await fetch(`http://localhost:8000/api/scanner/entry-method/${symbol}/reset`, {
+      const response = await fetch(`${API_BASE}/scanner/entry-method/${symbol}/reset`, {
         method: 'POST'
       });
-      
+
       if (!response.ok) {
         console.error('Failed to reset entry method');
       }
@@ -101,24 +113,37 @@ function App() {
       console.error('Error resetting entry method:', error);
     }
   };
+
   const [lastUpdated, setLastUpdated] = useState(null);
   const [lastScanUpdate, setLastScanUpdate] = useState(null);
 
-  // Connect to WebSocket
-  useEffect(() => {
-    console.log('🚀 MINERVINI BOT v2.0-DIRECT-CONNECT - Starting...');
-    console.log('📡 Connecting to: ws://localhost:8000/ws');
-    console.log('🔗 API Base: http://localhost:8000/api/');
-    
-    const websocket = new WebSocket('ws://localhost:8000/ws');
-    
-    websocket.onopen = () => {
+  // ─── WebSocket with auto-reconnect ────────────────────────────────────────
+  const connectWebSocket = useCallback(() => {
+    // Don't reconnect if the component has been unmounted
+    if (unmountedRef.current) return;
+
+    const attempt = reconnectAttemptRef.current;
+    console.log(`📡 WS connecting (attempt ${attempt + 1}) → ${WS_URL}`);
+
+    const ws = new WebSocket(WS_URL);
+    wsRef.current = ws;
+
+    ws.onopen = () => {
+      if (unmountedRef.current) { ws.close(); return; }
       console.log('✅ WebSocket connected');
+      setWsConnected(true);
+      reconnectAttemptRef.current = 0; // reset backoff on successful connect
     };
-    
-    websocket.onmessage = (event) => {
-      const data = JSON.parse(event.data);
-      
+
+    ws.onmessage = (event) => {
+      let data;
+      try {
+        data = JSON.parse(event.data);
+      } catch (parseErr) {
+        console.warn('⚠️ WS message parse error — skipping frame:', parseErr);
+        return;
+      }
+
       if (data.type === 'status') {
         setStatus(data.data);
         setLastUpdated(new Date());
@@ -129,21 +154,34 @@ function App() {
         console.warn('🛑 Exit triggers:', data.exits);
       }
     };
-    
-    websocket.onerror = (error) => {
+
+    ws.onerror = (error) => {
+      // onerror always fires before onclose; log but let onclose handle reconnect
       console.error('❌ WebSocket error:', error);
     };
-    
-    websocket.onclose = () => {
-      console.log('WebSocket disconnected');
+
+    ws.onclose = (event) => {
+      if (unmountedRef.current) return; // component gone, don't reconnect
+      setWsConnected(false);
+      const delay = getReconnectDelay(reconnectAttemptRef.current);
+      console.log(`🔁 WS closed (code ${event.code}). Reconnecting in ${delay / 1000}s…`);
+      reconnectAttemptRef.current += 1;
+      reconnectTimerRef.current = setTimeout(connectWebSocket, delay);
     };
-    
-    setWs(websocket);
-    
+  }, []); // stable reference — no deps needed because we use refs
+
+  useEffect(() => {
+    console.log('🚀 MINERVINI BOT v2.0 - Starting...');
+    console.log(`🔗 API Base: ${API_BASE}`);
+    unmountedRef.current = false;
+    connectWebSocket();
+
     return () => {
-      websocket.close();
+      unmountedRef.current = true;
+      clearTimeout(reconnectTimerRef.current);
+      if (wsRef.current) wsRef.current.close();
     };
-  }, []);
+  }, [connectWebSocket]);
 
   // Fetch initial data
   useEffect(() => {
@@ -155,7 +193,7 @@ function App() {
 
   const fetchStatus = async () => {
     try {
-      const response = await fetch('http://localhost:8000/api/status');
+      const response = await fetch(`${API_BASE}/status`);
       const data = await response.json();
       setStatus(data);
     } catch (error) {
@@ -165,7 +203,7 @@ function App() {
 
   const fetchScanResults = async () => {
     try {
-      const response = await fetch('http://localhost:8000/api/scanner/results');
+      const response = await fetch(`${API_BASE}/scanner/results`);
       const data = await response.json();
       setScanResults(data.results || []);
       setLastScanUpdate(new Date());
@@ -176,7 +214,7 @@ function App() {
 
   const fetchPositions = async () => {
     try {
-      const response = await fetch('http://localhost:8000/api/positions');
+      const response = await fetch(`${API_BASE}/positions`);
       const data = await response.json();
       setPositions(data.positions || []);
     } catch (error) {
@@ -186,7 +224,7 @@ function App() {
 
   const fetchConfig = async () => {
     try {
-      const response = await fetch('http://localhost:8000/api/config');
+      const response = await fetch(`${API_BASE}/config`);
       const data = await response.json();
       setConfig(data.config);
     } catch (error) {
@@ -196,7 +234,7 @@ function App() {
 
   const handleStartScanner = async () => {
     try {
-      const response = await fetch('http://localhost:8000/api/scanner/start', { method: 'POST' });
+      const response = await fetch(`${API_BASE}/scanner/start`, { method: 'POST' });
       const data = await response.json();
       if (data.success) {
         alert('✅ Scanner started!');
@@ -209,7 +247,7 @@ function App() {
 
   const handleStopScanner = async () => {
     try {
-      const response = await fetch('http://localhost:8000/api/scanner/stop', { method: 'POST' });
+      const response = await fetch(`${API_BASE}/scanner/stop`, { method: 'POST' });
       const data = await response.json();
       if (data.success) {
         alert('✅ Scanner stopped');
@@ -225,16 +263,32 @@ function App() {
   return (
     <div className="app">
       <header className="app-header">
-        <h1>📈 Minervini Momentum Scanner <span style={{fontSize: '14px', backgroundColor: '#ffeb3b', color: '#000', padding: '4px 8px', borderRadius: '4px', marginLeft: '10px', fontWeight: 'bold'}}>v2.0-DIRECT-CONNECT</span></h1>
+        <h1>📈 Minervini Momentum Scanner <span style={{fontSize: '14px', backgroundColor: '#ffeb3b', color: '#000', padding: '4px 8px', borderRadius: '4px', marginLeft: '10px', fontWeight: 'bold'}}>v2.0</span></h1>
         <div className="header-controls">
+          {/* WebSocket live connection indicator */}
+          <span style={{
+            fontSize: '12px',
+            padding: '3px 8px',
+            borderRadius: '4px',
+            backgroundColor: wsConnected ? 'rgba(16,185,129,0.15)' : 'rgba(239,68,68,0.15)',
+            border: `1px solid ${wsConnected ? '#10b981' : '#ef4444'}`,
+            color: wsConnected ? '#10b981' : '#ef4444',
+            fontWeight: '600'
+          }}>
+            {wsConnected ? '🟢 Live' : '🔴 Reconnecting…'}
+          </span>
+
           {status && (
             <>
               <span className={status.scanner_running ? 'status-running' : 'status-stopped'}>
                 {status.scanner_running ? '🟢 SCANNING' : '⚪ STOPPED'}
               </span>
-              <span className={status.ib_connected ? 'status-connected' : 'status-disconnected'}>
-                {status.ib_connected ? '✅ IB Connected' : '❌ IB Disconnected'}
-              </span>
+              {/* Only show IB status when WS is actually connected so it reflects real backend state */}
+              {wsConnected && (
+                <span className={status.ib_connected ? 'status-connected' : 'status-disconnected'}>
+                  {status.ib_connected ? '✅ IB Connected' : '⚠️ IB Disconnected'}
+                </span>
+              )}
               {lastUpdated && (
                 <span style={{fontSize: '12px', color: '#666', marginLeft: '15px'}}>
                   Status: {lastUpdated.toLocaleTimeString()}

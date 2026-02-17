@@ -1,5 +1,7 @@
 import React, { useState, useEffect } from 'react';
 
+const API_BASE = 'http://localhost:8000/api';
+
 function ConfigPanel({ config, onUpdate }) {
   const [formData, setFormData] = useState({
     stop_loss_pct: 8.0,
@@ -27,7 +29,7 @@ function ConfigPanel({ config, onUpdate }) {
     e.preventDefault();
 
     try {
-      const response = await fetch('http://localhost:8000/api/config', {
+      const response = await fetch(`${API_BASE}/config`, {
         method: 'PUT',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(formData)
