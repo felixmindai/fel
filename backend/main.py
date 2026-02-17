@@ -87,6 +87,7 @@ class ConfigUpdate(BaseModel):
     position_size_usd: Optional[float] = None
     paper_trading: Optional[bool] = None
     auto_execute: Optional[bool] = None
+    default_entry_method: Optional[str] = None
 
 class PositionCreate(BaseModel):
     symbol: str
@@ -375,6 +376,40 @@ async def update_override(symbol: str, override: bool):
         logger.error(f"Error updating override for {symbol}: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
+@app.post("/api/scanner/entry-method/{symbol}")
+async def update_entry_method(symbol: str, entry_method: str):
+    """Update entry method for a symbol in today's scan results."""
+    try:
+        # Validate entry method
+        valid_methods = ['prev_close', 'market_open', 'limit_1pct']
+        if entry_method not in valid_methods:
+            raise HTTPException(status_code=400, detail=f"Invalid entry method. Must be one of: {valid_methods}")
+        
+        success = bot_state.db.update_scan_entry_method(symbol, entry_method)
+        if success:
+            return {"success": True, "symbol": symbol, "entry_method": entry_method}
+        else:
+            raise HTTPException(status_code=404, detail=f"No scan result found for {symbol} today")
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error updating entry method for {symbol}: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.post("/api/scanner/entry-method/{symbol}/reset")
+async def reset_entry_method(symbol: str):
+    """Reset entry method to use default from config."""
+    try:
+        # Set to NULL in database (will use default)
+        success = bot_state.db.update_scan_entry_method(symbol, None)
+        if success:
+            return {"success": True, "symbol": symbol, "entry_method": "default"}
+        else:
+            raise HTTPException(status_code=404, detail=f"No scan result found for {symbol} today")
+    except Exception as e:
+        logger.error(f"Error resetting entry method for {symbol}: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
 @app.post("/api/scanner/run-once")
 async def run_scanner_once():
     """Run scanner once manually."""
@@ -571,7 +606,8 @@ async def update_config(config: ConfigUpdate):
         'max_positions': config.max_positions if config.max_positions is not None else current_config['max_positions'],
         'position_size_usd': config.position_size_usd if config.position_size_usd is not None else current_config['position_size_usd'],
         'paper_trading': config.paper_trading if config.paper_trading is not None else current_config['paper_trading'],
-        'auto_execute': config.auto_execute if config.auto_execute is not None else current_config['auto_execute']
+        'auto_execute': config.auto_execute if config.auto_execute is not None else current_config['auto_execute'],
+        'default_entry_method': config.default_entry_method if config.default_entry_method is not None else current_config.get('default_entry_method', 'prev_close')
     }
     
     success = bot_state.db.update_config(updated_config)
@@ -643,14 +679,23 @@ async def websocket_endpoint(websocket: WebSocket):
                     logger.error(f"JSON serialization error: {json_err}")
                     logger.error(f"Problematic message: {message}")
                     # Send minimal fallback
-                    fallback = json.dumps({
-                        "type": "status",
-                        "data": {
-                            "scanner_running": bool(bot_state.scanner_running),
-                            "ib_connected": bool(bot_state.fetcher.connected)
-                        }
-                    })
-                    await websocket.send_text(fallback)
+                    try:
+                        fallback = json.dumps({
+                            "type": "status",
+                            "data": {
+                                "scanner_running": bool(bot_state.scanner_running),
+                                "ib_connected": bool(bot_state.fetcher.connected)
+                            }
+                        })
+                        await websocket.send_text(fallback)
+                    except:
+                        break  # Connection dead, exit loop
+                except (ConnectionError, ConnectionAbortedError, ConnectionResetError) as conn_err:
+                    logger.debug(f"WebSocket connection error (client likely disconnected): {conn_err}")
+                    break  # Exit loop cleanly
+                except Exception as send_err:
+                    logger.error(f"Unexpected error sending WebSocket message: {send_err}")
+                    break
                 
             except Exception as e:
                 logger.error(f"Error sending status: {e}")

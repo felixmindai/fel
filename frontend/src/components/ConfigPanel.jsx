@@ -6,7 +6,8 @@ function ConfigPanel({ config, onUpdate }) {
     max_positions: 16,
     position_size_usd: 10000,
     paper_trading: true,
-    auto_execute: false
+    auto_execute: false,
+    default_entry_method: 'prev_close'
   });
 
   useEffect(() => {
@@ -16,7 +17,8 @@ function ConfigPanel({ config, onUpdate }) {
         max_positions: config.max_positions || 16,
         position_size_usd: config.position_size_usd || 10000,
         paper_trading: config.paper_trading !== false,
-        auto_execute: config.auto_execute === true
+        auto_execute: config.auto_execute === true,
+        default_entry_method: config.default_entry_method || 'prev_close'
       });
     }
   }, [config]);
@@ -25,7 +27,7 @@ function ConfigPanel({ config, onUpdate }) {
     e.preventDefault();
 
     try {
-      const response = await fetch('/api/config', {
+      const response = await fetch('http://localhost:8000/api/config', {
         method: 'PUT',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(formData)
@@ -35,7 +37,12 @@ function ConfigPanel({ config, onUpdate }) {
       
       if (data.success) {
         alert('✅ Configuration updated!');
+        // Refresh config from server to get updated values
         onUpdate();
+        // Force re-fetch to update UI
+        setTimeout(() => {
+          window.location.reload();
+        }, 500);
       }
     } catch (error) {
       alert('❌ Error updating configuration: ' + error.message);
@@ -87,6 +94,29 @@ function ConfigPanel({ config, onUpdate }) {
           />
           <small style={{ color: '#6b7280', display: 'block', marginTop: '0.25rem' }}>
             Dollar amount for each position (default: $10,000)
+          </small>
+        </div>
+
+        <div className="form-group">
+          <label>Default Entry Method</label>
+          <select
+            value={formData.default_entry_method}
+            onChange={(e) => setFormData({ ...formData, default_entry_method: e.target.value })}
+            style={{
+              width: '100%',
+              padding: '0.5rem',
+              background: '#111827',
+              border: '1px solid #374151',
+              borderRadius: '0.25rem',
+              color: '#fff'
+            }}
+          >
+            <option value="prev_close">Previous Day Close Price</option>
+            <option value="market_open">Market Open Price</option>
+            <option value="limit_1pct">Limit Order 1% Above Close</option>
+          </select>
+          <small style={{ color: '#6b7280', display: 'block', marginTop: '0.25rem' }}>
+            Default entry method for newly qualified stocks
           </small>
         </div>
 

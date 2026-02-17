@@ -14,6 +14,7 @@ function App() {
   const [config, setConfig] = useState(null);
   const [ws, setWs] = useState(null);
   const [overrides, setOverrides] = useState({}); // Track which stocks are overridden
+  const [entryMethods, setEntryMethods] = useState({}); // Track manually set entry methods
 
   const handleOverrideToggle = async (symbol, checked) => {
     // Update local state immediately for responsive UI
@@ -43,6 +44,61 @@ function App() {
         ...prev,
         [symbol]: !checked
       }));
+    }
+  };
+
+  const handleEntryMethodChange = async (symbol, method) => {
+    // Update local state immediately for responsive UI
+    setEntryMethods(prev => ({
+      ...prev,
+      [symbol]: method
+    }));
+    
+    // Save to backend
+    try {
+      const response = await fetch(`http://localhost:8000/api/scanner/entry-method/${symbol}?entry_method=${method}`, {
+        method: 'POST'
+      });
+      
+      if (!response.ok) {
+        console.error('Failed to save entry method');
+        // Revert on failure
+        setEntryMethods(prev => {
+          const newState = {...prev};
+          delete newState[symbol];
+          return newState;
+        });
+      }
+    } catch (error) {
+      console.error('Error saving entry method:', error);
+      // Revert on error
+      setEntryMethods(prev => {
+        const newState = {...prev};
+        delete newState[symbol];
+        return newState;
+      });
+    }
+  };
+
+  const handleResetEntryMethod = async (symbol) => {
+    // Reset to default by clearing manual selection
+    setEntryMethods(prev => {
+      const newState = {...prev};
+      delete newState[symbol];
+      return newState;
+    });
+    
+    // Clear in backend (set to NULL)
+    try {
+      const response = await fetch(`http://localhost:8000/api/scanner/entry-method/${symbol}/reset`, {
+        method: 'POST'
+      });
+      
+      if (!response.ok) {
+        console.error('Failed to reset entry method');
+      }
+    } catch (error) {
+      console.error('Error resetting entry method:', error);
     }
   };
   const [lastUpdated, setLastUpdated] = useState(null);
@@ -242,11 +298,15 @@ function App() {
           <ScannerTable 
             results={scanResults.map(r => ({
               ...r,
-              override: overrides[r.symbol] || false
+              override: overrides[r.symbol] || false,
+              entry_method: entryMethods[r.symbol] || r.entry_method || config?.default_entry_method || 'prev_close',
+              manually_set: !!entryMethods[r.symbol] || (r.entry_method && r.entry_method !== config?.default_entry_method)
             }))}
             onRefresh={fetchScanResults}
             lastUpdated={lastScanUpdate}
             onOverrideToggle={handleOverrideToggle}
+            onEntryMethodChange={handleEntryMethodChange}
+            defaultEntryMethod={config?.default_entry_method || 'prev_close'}
           />
         )}
         {activeTab === 'portfolio' && (

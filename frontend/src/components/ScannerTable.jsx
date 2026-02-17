@@ -1,6 +1,6 @@
 import React, { useState } from 'react';
 
-function ScannerTable({ results, onRefresh, lastUpdated, onOverrideToggle }) {
+function ScannerTable({ results, onRefresh, lastUpdated, onOverrideToggle, onEntryMethodChange }) {
   const [filter, setFilter] = useState('all');
   const [viewMode, setViewMode] = useState('simple'); // 'simple' or 'detailed'
 
@@ -49,6 +49,7 @@ function ScannerTable({ results, onRefresh, lastUpdated, onOverrideToggle }) {
             <th>SPY OK</th>
             <th>Qualified</th>
             <th>Action</th>
+            <th>Entry Price</th>
             <th>Override</th>
           </tr>
         </thead>
@@ -163,6 +164,26 @@ function ScannerTable({ results, onRefresh, lastUpdated, onOverrideToggle }) {
                 ) : (
                   <span className="action-pass">⛔ SKIP</span>
                 )}
+              </td>
+              
+              <td style={{textAlign: 'center'}}>
+                <select
+                  value={r.entry_method || 'prev_close'}
+                  onChange={(e) => onEntryMethodChange && onEntryMethodChange(r.symbol, e.target.value)}
+                  style={{
+                    padding: '4px 8px',
+                    background: '#111827',
+                    border: '1px solid #374151',
+                    borderRadius: '4px',
+                    color: '#fff',
+                    fontSize: '12px',
+                    cursor: 'pointer'
+                  }}
+                >
+                  <option value="prev_close">Prev Close (${r.price?.toFixed(2)})</option>
+                  <option value="market_open">Market Open</option>
+                  <option value="limit_1pct">Limit +1% (${(r.price * 1.01)?.toFixed(2)})</option>
+                </select>
               </td>
               
               <td style={{textAlign: 'center'}}>

@@ -120,6 +120,7 @@ class Database:
                     qualified BOOLEAN,
                     action VARCHAR(50),
                     override BOOLEAN DEFAULT false,
+                    entry_method VARCHAR(50) DEFAULT NULL,
                     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                     UNIQUE(scan_date, symbol)
                 )
@@ -134,6 +135,22 @@ class Database:
                         WHERE table_name='scan_results' AND column_name='override'
                     ) THEN
                         ALTER TABLE scan_results ADD COLUMN override BOOLEAN DEFAULT false;
+                    END IF;
+                END $$;
+            """)
+            
+            # Add entry_method column if it doesn't exist (migration)
+            cursor.execute("""
+                DO $$ 
+                BEGIN
+                    IF NOT EXISTS (
+                        SELECT 1 FROM information_schema.columns 
+                        WHERE table_name='scan_results' AND column_name='entry_method'
+                    ) THEN
+                        ALTER TABLE scan_results ADD COLUMN entry_method VARCHAR(50) DEFAULT NULL;
+                    ELSE
+                        -- Set existing 'prev_close' values to NULL (use default instead)
+                        UPDATE scan_results SET entry_method = NULL WHERE entry_method = 'prev_close';
                     END IF;
                 END $$;
             """)
@@ -186,6 +203,7 @@ class Database:
                     paper_trading BOOLEAN DEFAULT true,
                     auto_execute BOOLEAN DEFAULT false,
                     scanner_running BOOLEAN DEFAULT false,
+                    default_entry_method VARCHAR(50) DEFAULT 'prev_close',
                     updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                     CHECK (id = 1)
                 )
@@ -196,6 +214,19 @@ class Database:
                 INSERT INTO bot_config (id) 
                 VALUES (1) 
                 ON CONFLICT (id) DO NOTHING
+            """)
+            
+            # Add default_entry_method column if it doesn't exist (migration)
+            cursor.execute("""
+                DO $$ 
+                BEGIN
+                    IF NOT EXISTS (
+                        SELECT 1 FROM information_schema.columns 
+                        WHERE table_name='bot_config' AND column_name='default_entry_method'
+                    ) THEN
+                        ALTER TABLE bot_config ADD COLUMN default_entry_method VARCHAR(50) DEFAULT 'prev_close';
+                    END IF;
+                END $$;
             """)
             
             # Create indexes
@@ -463,12 +494,25 @@ class Database:
         
         try:
             cursor.execute("""
-                SELECT * FROM scan_results
-                WHERE scan_date = (SELECT MAX(scan_date) FROM scan_results)
-                ORDER BY qualified DESC, symbol
+                SELECT 
+                    sr.*,
+                    COALESCE(sr.entry_method, bc.default_entry_method, 'prev_close') as effective_entry_method,
+                    bc.default_entry_method
+                FROM scan_results sr
+                CROSS JOIN bot_config bc
+                WHERE sr.scan_date = (SELECT MAX(scan_date) FROM scan_results)
+                ORDER BY sr.qualified DESC, sr.symbol
             """)
             
-            return [dict(row) for row in cursor.fetchall()]
+            results = [dict(row) for row in cursor.fetchall()]
+            
+            # Clean up - replace entry_method with effective_entry_method
+            for result in results:
+                result['entry_method'] = result['effective_entry_method']
+                result['manually_set'] = result.get('entry_method') is not None and result['entry_method'] != result.get('default_entry_method')
+                del result['effective_entry_method']
+            
+            return results
             
         finally:
             cursor.close()
@@ -498,6 +542,35 @@ class Database:
         except Exception as e:
             conn.rollback()
             logger.error(f"❌ Error updating override for {symbol}: {e}")
+            return False
+        finally:
+            cursor.close()
+            conn.close()
+    
+    def update_scan_entry_method(self, symbol: str, entry_method: str) -> bool:
+        """Update entry method for a symbol in today's scan results."""
+        conn = self.get_connection()
+        cursor = conn.cursor()
+        
+        try:
+            today = date.today()
+            cursor.execute("""
+                UPDATE scan_results 
+                SET entry_method = %s
+                WHERE symbol = %s AND scan_date = %s
+            """, (entry_method, symbol, today))
+            
+            if cursor.rowcount > 0:
+                conn.commit()
+                logger.info(f"✅ Updated entry method for {symbol}: {entry_method}")
+                return True
+            else:
+                logger.warning(f"⚠️ No scan result found for {symbol} on {today}")
+                return False
+            
+        except Exception as e:
+            conn.rollback()
+            logger.error(f"❌ Error updating entry method for {symbol}: {e}")
             return False
         finally:
             cursor.close()
@@ -701,6 +774,7 @@ class Database:
                     position_size_usd = %s,
                     paper_trading = %s,
                     auto_execute = %s,
+                    default_entry_method = %s,
                     updated_at = CURRENT_TIMESTAMP
                 WHERE id = 1
             """, (
@@ -708,7 +782,8 @@ class Database:
                 config.get('max_positions'),
                 config.get('position_size_usd'),
                 config.get('paper_trading'),
-                config.get('auto_execute')
+                config.get('auto_execute'),
+                config.get('default_entry_method', 'prev_close')
             ))
             
             conn.commit()
