@@ -1,0 +1,163 @@
+# ==================== SENSITIVE FILES ====================
+# Never commit these - contain passwords, API keys, secrets
+.env
+.env.local
+.env.production
+config.ini
+secrets.json
+
+# ==================== PYTHON ====================
+# Byte-compiled / optimized / DLL files
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+
+# Virtual environments
+venv/
+env/
+ENV/
+.venv/
+backend/venv/
+
+# Distribution / packaging
+dist/
+build/
+*.egg-info/
+.Python
+
+# Unit test / coverage
+.pytest_cache/
+.coverage
+htmlcov/
+*.cover
+
+# Jupyter Notebook
+.ipynb_checkpoints
+
+# pyenv
+.python-version
+
+# ==================== NODE.JS / FRONTEND ====================
+# Dependencies
+node_modules/
+frontend/node_modules/
+
+# Production build
+frontend/dist/
+frontend/build/
+
+# Logs
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+lerna-debug.log*
+
+# Environment variables
+frontend/.env.local
+frontend/.env.production
+
+# ==================== DATABASE ====================
+# Local database files (if using SQLite for testing)
+*.db
+*.sqlite
+*.sqlite3
+
+# Database dumps
+*.sql
+*.dump
+
+# PostgreSQL local data
+postgres_data/
+pgdata/
+
+# ==================== LOGS ====================
+# Application logs
+*.log
+logs/
+*.log.*
+
+# Trading logs
+trades.log
+scanner.log
+positions.log
+
+# ==================== IDE / EDITORS ====================
+# VS Code
+.vscode/
+*.code-workspace
+
+# PyCharm / IntelliJ
+.idea/
+*.iml
+*.iws
+
+# Sublime Text
+*.sublime-project
+*.sublime-workspace
+
+# Vim
+*.swp
+*.swo
+*~
+
+# ==================== OPERATING SYSTEM ====================
+# macOS
+.DS_Store
+.AppleDouble
+.LSOverride
+
+# Windows
+Thumbs.db
+ehthumbs.db
+Desktop.ini
+$RECYCLE.BIN/
+
+# Linux
+*~
+
+# ==================== TRADING SPECIFIC ====================
+# Historical data cache
+data/cache/
+*.csv
+historical_data/
+
+# Backtest results
+backtest_results/
+performance_reports/
+
+# Order history exports
+orders/
+executions/
+
+# ==================== TEMPORARY FILES ====================
+# Temporary files
+*.tmp
+*.temp
+*.bak
+*.backup
+*_backup
+
+# Cache directories
+.cache/
+__pycache__/
+
+# ==================== DOCUMENTATION ====================
+# Generated documentation
+docs/_build/
+site/
+
+# ==================== MISC ====================
+# Package manager lock files (optional - some teams commit these)
+# Uncomment if you don't want to commit lock files:
+# package-lock.json
+# yarn.lock
+# poetry.lock
+
+# Coverage reports
+coverage/
+.nyc_output/
+
+# Storybook
+storybook-static/
