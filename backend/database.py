@@ -527,8 +527,16 @@ class Database:
         
         try:
             cursor.execute("""
-                SELECT 
+                SELECT
                     sr.*,
+                    sr.criteria_1_within_5pct_52w_high   AS criteria_1,
+                    sr.criteria_2_above_50ma              AS criteria_2,
+                    sr.criteria_3_50ma_above_150ma        AS criteria_3,
+                    sr.criteria_4_150ma_above_200ma       AS criteria_4,
+                    sr.criteria_5_200ma_trending_up       AS criteria_5,
+                    sr.criteria_6_above_30pct_52w_low     AS criteria_6,
+                    sr.criteria_7_breakout_volume         AS criteria_7,
+                    sr.criteria_8_spy_above_50ma          AS criteria_8,
                     COALESCE(sr.entry_method, bc.default_entry_method, 'prev_close') as effective_entry_method,
                     bc.default_entry_method
                 FROM scan_results sr
