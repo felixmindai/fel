@@ -102,8 +102,11 @@ class BotState:
     """Global bot state."""
     def __init__(self):
         self.db = Database()
+        # Use a single DataFetcher instance shared by both the sync scanner/monitor
+        # and the async wrapper. This ensures that connecting via async_fetcher
+        # is immediately visible to the scanner (self.fetcher.connected == True).
         self.fetcher = DataFetcher()
-        self.async_fetcher = AsyncDataFetcher()
+        self.async_fetcher = AsyncDataFetcher(self.fetcher)
         self.scanner = MinerviniScanner(self.db, self.fetcher)
         self.monitor = PositionMonitor(self.db, self.fetcher)
         self.scanner_running = False
@@ -315,11 +318,12 @@ async def start_scanner():
     if bot_state.scanner_running:
         raise HTTPException(status_code=400, detail="Scanner already running")
     
-    # Connect to IB if not connected
+    # Connect to IB if not already connected
     if not bot_state.fetcher.connected:
         connected = await bot_state.async_fetcher.connect()
         if not connected:
-            raise HTTPException(status_code=503, detail="Could not connect to Interactive Brokers")
+            # Allow scanner to start anyway — it will use DB prices as fallback
+            logger.warning("⚠️ Could not connect to IB — scanner will use DB closing prices")
     
     bot_state.scanner_running = True
     bot_state.db.set_scanner_status(True)

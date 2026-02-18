@@ -285,10 +285,15 @@ class DataFetcher:
 # ============================================================================
 
 class AsyncDataFetcher:
-    """Async wrapper for DataFetcher to use in FastAPI."""
-    
-    def __init__(self):
-        self.fetcher = DataFetcher()
+    """Async wrapper for DataFetcher to use in FastAPI.
+
+    Pass an existing DataFetcher instance so that the sync scanner/monitor
+    and the async API layer share the same connection state.
+    If no instance is provided a new one is created (backwards compatible).
+    """
+
+    def __init__(self, fetcher: DataFetcher = None):
+        self.fetcher = fetcher if fetcher is not None else DataFetcher()
     
     async def connect(self) -> bool:
         """Async connect."""
