@@ -26,6 +26,9 @@ from database import Database
 from data_fetcher import DataFetcher, AsyncDataFetcher
 from scanner import MinerviniScanner, PositionMonitor
 from data_updater import data_update_scheduler_loop, run_data_update
+from zoneinfo import ZoneInfo
+
+ET = ZoneInfo("America/New_York")  # all date logic uses ET, not machine local
 
 # Custom JSON encoder for handling special types
 class CustomJSONEncoder(json.JSONEncoder):
@@ -534,7 +537,7 @@ async def create_position(position: PositionCreate):
     # Create trade record
     trade = {
         'symbol': position.symbol,
-        'entry_date': date.today(),
+        'entry_date': datetime.now(ET).date(),
         'entry_price': position.entry_price,
         'quantity': position.quantity,
         'cost_basis': cost_basis
@@ -545,7 +548,7 @@ async def create_position(position: PositionCreate):
     # Create position record
     pos = {
         'symbol': position.symbol,
-        'entry_date': date.today(),
+        'entry_date': datetime.now(ET).date(),
         'entry_price': position.entry_price,
         'quantity': position.quantity,
         'stop_loss': stop_loss,
@@ -585,7 +588,7 @@ async def close_position(symbol: str, exit_price: Optional[float] = None):
     # Close trade
     bot_state.db.close_trade(
         position['trade_id'],
-        date.today(),
+        datetime.now(ET).date(),
         exit_price,
         proceeds,
         pnl,

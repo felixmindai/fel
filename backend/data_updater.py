@@ -77,7 +77,7 @@ def _last_completed_bar_date() -> date:
     This prevents re-fetching the same partial/incomplete bar every time the
     user clicks "Update Now" during market hours.
     """
-    today = date.today()
+    today = datetime.now(ET).date()   # always use ET date, not machine local
     weekday = today.weekday()  # 0=Mon … 6=Sun
     if weekday == 5:           # Saturday → last completed bar was Friday
         return today - timedelta(days=1)

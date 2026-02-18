@@ -16,9 +16,12 @@ Scans stocks for breakout opportunities using Mark Minervini's criteria:
 
 from datetime import date, datetime
 from typing import List, Dict, Optional
+from zoneinfo import ZoneInfo
 import logging
 from database import Database
 from data_fetcher import DataFetcher
+
+ET = ZoneInfo("America/New_York")  # all date logic uses ET, not machine local
 
 logger = logging.getLogger(__name__)
 
@@ -113,7 +116,7 @@ class MinerviniScanner:
         action = 'BUY_AT_OPEN' if all_criteria_met else 'PASS'
         
         result = {
-            'scan_date': date.today(),
+            'scan_date': datetime.now(ET).date(),
             'symbol': symbol,
             'price': current_price,
             'week_52_high': week_52_high,
@@ -308,7 +311,7 @@ class MinerviniScanner:
     def _failed_result(self, symbol: str, reason: str) -> Dict:
         """Create a failed scan result."""
         return {
-            'scan_date': date.today(),
+            'scan_date': datetime.now(ET).date(),
             'symbol': symbol,
             'price': 0,
             'week_52_high': 0,

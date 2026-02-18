@@ -14,10 +14,13 @@ from psycopg2 import sql, extras
 from psycopg2.extras import RealDictCursor
 from datetime import datetime, date
 from typing import List, Dict, Optional, Tuple
+from zoneinfo import ZoneInfo
 import json
 import logging
 import os
 from dotenv import load_dotenv
+
+ET = ZoneInfo("America/New_York")  # all date logic uses ET, not machine local
 
 load_dotenv()
 
@@ -559,7 +562,7 @@ class Database:
         cursor = conn.cursor()
         
         try:
-            today = date.today()
+            today = datetime.now(ET).date()
             cursor.execute("""
                 UPDATE scan_results 
                 SET override = %s
@@ -588,7 +591,7 @@ class Database:
         cursor = conn.cursor()
         
         try:
-            today = date.today()
+            today = datetime.now(ET).date()
             cursor.execute("""
                 UPDATE scan_results 
                 SET entry_method = %s
