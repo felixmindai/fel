@@ -191,8 +191,6 @@ class MinerviniScanner:
             logger.error(traceback.format_exc())
             self.spy_qualified = False
             return False
-            self.spy_qualified = False
-            return False
     
     def scan_all_tickers(self) -> List[Dict]:
         """
@@ -361,33 +359,42 @@ class PositionMonitor:
             symbol = pos['symbol']
             
             try:
+                import math
                 # Get current price
-                current_price = self.fetcher.fetch_current_price(symbol)
-                
-                if not current_price:
+                raw_price = self.fetcher.fetch_current_price(symbol)
+
+                # Guard against None, zero, nan, inf (IB can return these for halted symbols)
+                if not raw_price:
                     logger.warning(f"⚠️ Could not fetch price for {symbol}")
                     continue
-                
-                # Check stop loss
-                if current_price <= pos['stop_loss']:
+                raw_price = float(raw_price)
+                if math.isnan(raw_price) or math.isinf(raw_price) or raw_price <= 0:
+                    logger.warning(f"⚠️ Invalid price for {symbol}: {raw_price}")
+                    continue
+                current_price = raw_price
+
+                # Check stop loss (convert Decimal DB value to float for comparison)
+                stop_loss = float(pos['stop_loss'])
+                if current_price <= stop_loss:
                     exits_needed.append({
                         'symbol': symbol,
                         'position': pos,
                         'current_price': current_price,
                         'reason': 'STOP_LOSS',
-                        'trigger_price': pos['stop_loss']
+                        'trigger_price': stop_loss
                     })
-                    logger.warning(f"🛑 {symbol} hit STOP LOSS: ${current_price:.2f} <= ${pos['stop_loss']:.2f}")
+                    logger.warning(f"🛑 {symbol} hit STOP LOSS: ${current_price:.2f} <= ${stop_loss:.2f}")
                     continue
-                
+
                 # Check 50-day MA break
                 bars = self.db.get_daily_bars(symbol, limit=60)
-                
+
                 if bars and len(bars) >= 50:
                     bars.reverse()  # Chronological order
-                    closes = [bar['close'] for bar in bars]
+                    # Convert Decimal DB values to float and skip None rows
+                    closes = [float(bar['close']) for bar in bars if bar['close']]
                     ma_50 = sum(closes[-50:]) / 50
-                    
+
                     if current_price < ma_50:
                         exits_needed.append({
                             'symbol': symbol,

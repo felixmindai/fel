@@ -1,6 +1,5 @@
 import React, { useState, useEffect } from 'react';
-
-const API_BASE = 'http://localhost:8000/api';
+import { API_BASE } from '../config';
 
 function ConfigPanel({ config, onUpdate }) {
   const [formData, setFormData] = useState({

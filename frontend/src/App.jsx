@@ -5,9 +5,7 @@ import PortfolioPanel from './components/PortfolioPanel';
 import TickerManager from './components/TickerManager';
 import ConfigPanel from './components/ConfigPanel';
 import StatusBar from './components/StatusBar';
-
-const WS_URL = 'ws://localhost:8000/ws';
-const API_BASE = 'http://localhost:8000/api';
+import { API_BASE, WS_URL } from './config';
 
 // Reconnect delays: 1s, 2s, 4s, 8s, 16s, 30s (capped)
 const getReconnectDelay = (attempt) => Math.min(1000 * Math.pow(2, attempt), 30000);

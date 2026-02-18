@@ -1,4 +1,5 @@
 import React, { useState, useEffect } from 'react';
+import { API_BASE } from '../config';
 
 function TickerManager({ onUpdate }) {
   const [tickers, setTickers] = useState([]);
@@ -12,7 +13,7 @@ function TickerManager({ onUpdate }) {
 
   const fetchTickers = async () => {
     try {
-      const response = await fetch('/api/tickers');
+      const response = await fetch(`${API_BASE}/tickers`);
       const data = await response.json();
       setTickers(data.tickers || []);
     } catch (error) {
@@ -27,7 +28,7 @@ function TickerManager({ onUpdate }) {
     }
 
     try {
-      const response = await fetch('/api/tickers', {
+      const response = await fetch(`${API_BASE}/tickers`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -56,7 +57,7 @@ function TickerManager({ onUpdate }) {
     if (!confirm(`Remove ${symbol}?`)) return;
 
     try {
-      const response = await fetch(`/api/tickers/${symbol}`, { method: 'DELETE' });
+      const response = await fetch(`${API_BASE}/tickers/${symbol}`, { method: 'DELETE' });
       const data = await response.json();
       
       if (data.success) {

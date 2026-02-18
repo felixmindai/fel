@@ -1,6 +1,5 @@
 import React from 'react';
-
-const API_BASE = 'http://localhost:8000/api';
+import { API_BASE } from '../config';
 
 function PortfolioPanel({ positions, config, onRefresh }) {
   const handleClosePosition = async (symbol) => {
