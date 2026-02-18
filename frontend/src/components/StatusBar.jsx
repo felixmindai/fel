@@ -83,7 +83,14 @@ function StatusBar({ status, qualifiedCount, totalTickers, lastScanUpdate, dataU
         <div className="subtext" style={{ marginBottom: '0.5rem' }}>{duSub}</div>
         <button
           className="btn btn-primary"
-          style={{ padding: '0.35rem 0.75rem', fontSize: '0.75rem', marginTop: '0.25rem' }}
+          style={{
+            padding: '0.35rem 0.75rem',
+            fontSize: '0.75rem',
+            marginTop: '0.25rem',
+            opacity: duRunning ? 0.45 : 1,
+            cursor: duRunning ? 'not-allowed' : 'pointer',
+            pointerEvents: duRunning ? 'none' : 'auto'
+          }}
           onClick={onUpdateDataNow}
           disabled={duRunning}
         >

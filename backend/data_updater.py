@@ -66,6 +66,27 @@ def seconds_until_next_trigger(update_time_str: str) -> float:
     return max(delta, 1.0)   # never negative
 
 
+def _last_completed_bar_date() -> date:
+    """
+    Return the date of the most recent *completed* trading day.
+
+    IB returns bars for dates up to and including today while the market is
+    still open (partial bar). We treat the last *completed* bar as:
+      - Yesterday, if today is a weekday (Mon–Fri)
+      - Last Friday, if today is Saturday or Sunday
+    This prevents re-fetching the same partial/incomplete bar every time the
+    user clicks "Update Now" during market hours.
+    """
+    today = date.today()
+    weekday = today.weekday()  # 0=Mon … 6=Sun
+    if weekday == 5:           # Saturday → last completed bar was Friday
+        return today - timedelta(days=1)
+    if weekday == 6:           # Sunday → last completed bar was Friday
+        return today - timedelta(days=2)
+    # Weekday: last completed bar is yesterday
+    return today - timedelta(days=1)
+
+
 def compute_fetch_duration(symbol: str, db) -> Optional[str]:
     """
     Return the IB duration string that covers the gap since the last stored
@@ -78,11 +99,11 @@ def compute_fetch_duration(symbol: str, db) -> Optional[str]:
     if latest is None:
         return '1 Y'   # never fetched — bootstrap the full history
 
-    today = date.today()
-    gap_days = (today - latest).days
+    last_completed = _last_completed_bar_date()
+    gap_days = (last_completed - latest).days
 
     if gap_days <= 0:
-        return None    # already current — skip this ticker
+        return None    # already current — last completed bar is in the DB
 
     # Add a 5-day buffer to account for weekends and holidays, cap at 1 year
     fetch_days = min(gap_days + 5, MAX_FETCH_DAYS)
