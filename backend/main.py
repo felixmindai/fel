@@ -657,9 +657,9 @@ async def websocket_endpoint(websocket: WebSocket):
                     "data": {
                         "scanner_running": bool(bot_state.scanner_running),
                         "ib_connected": bool(bot_state.fetcher.connected),
-                        "active_tickers": int(status.get('active_tickers', 90)),
-                        "open_positions": int(status.get('open_positions', 0)),
-                        "last_scan": int(status.get('last_scan', 0))
+                        "active_tickers": int(status.get('active_tickers') or 0),
+                        "open_positions": int(status.get('open_positions') or 0),
+                        "last_scan": int(status.get('last_scan') or 0)
                     }
                 }
                 
@@ -667,9 +667,9 @@ async def websocket_endpoint(websocket: WebSocket):
                 if status.get('config'):
                     config = status['config']
                     message["data"]["config"] = {
-                        "stop_loss_pct": float(config.get('stop_loss_pct', 8.0)),
-                        "max_positions": int(config.get('max_positions', 16)),
-                        "position_size_usd": float(config.get('position_size_usd', 10000)),
+                        "stop_loss_pct": float(config.get('stop_loss_pct') or 8.0),
+                        "max_positions": int(config.get('max_positions') or 16),
+                        "position_size_usd": float(config.get('position_size_usd') or 10000),
                         "paper_trading": bool(config.get('paper_trading', True)),
                         "auto_execute": bool(config.get('auto_execute', False))
                     }
@@ -678,11 +678,11 @@ async def websocket_endpoint(websocket: WebSocket):
                 if status.get('statistics'):
                     stats = status['statistics']
                     message["data"]["statistics"] = {
-                        "total_trades": int(stats.get('total_trades', 0)),
-                        "wins": int(stats.get('wins', 0)),
-                        "losses": int(stats.get('losses', 0)),
-                        "win_rate": float(stats.get('win_rate', 0.0)),
-                        "total_pnl": float(stats.get('total_pnl', 0.0))
+                        "total_trades": int(stats.get('total_trades') or 0),
+                        "wins": int(stats.get('wins') or 0),
+                        "losses": int(stats.get('losses') or 0),
+                        "win_rate": float(stats.get('win_rate') or 0.0),
+                        "total_pnl": float(stats.get('total_pnl') or 0.0)
                     }
                 
                 # Send using manual JSON encoding to catch serialization errors

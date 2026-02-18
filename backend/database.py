@@ -508,8 +508,13 @@ class Database:
             
             # Clean up - replace entry_method with effective_entry_method
             for result in results:
-                result['entry_method'] = result['effective_entry_method']
-                result['manually_set'] = result.get('entry_method') is not None and result['entry_method'] != result.get('default_entry_method')
+                effective = result['effective_entry_method']
+                default = result.get('default_entry_method')
+                # A symbol has a manually-set entry method only when the DB column
+                # is not NULL (i.e. different from the config default).
+                raw_entry = result.get('entry_method')  # still the original DB value here
+                result['manually_set'] = raw_entry is not None and raw_entry != default
+                result['entry_method'] = effective
                 del result['effective_entry_method']
             
             return results
@@ -864,12 +869,12 @@ class Database:
                 'wins': wins,
                 'losses': closed_stats[2] or 0,
                 'win_rate': (wins / total_trades * 100) if total_trades > 0 else 0,
-                'total_pnl': float(closed_stats[3]),
-                'avg_pnl': float(closed_stats[4]),
-                'max_win': float(closed_stats[5]),
-                'max_loss': float(closed_stats[6]),
+                'total_pnl': float(closed_stats[3] or 0),
+                'avg_pnl': float(closed_stats[4] or 0),
+                'max_win': float(closed_stats[5] or 0),
+                'max_loss': float(closed_stats[6] or 0),
                 'open_positions': open_stats[0] or 0,
-                'total_invested': float(open_stats[1])
+                'total_invested': float(open_stats[1] or 0)
             }
             
         finally:
