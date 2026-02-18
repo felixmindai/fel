@@ -99,7 +99,7 @@ class MinerviniScanner:
         
         # 7. Breakout on above-average volume (1.5x)
         criteria_7 = current_volume >= (avg_volume_50 * 1.5) if avg_volume_50 > 0 else False
-        
+
         # 8. SPY above its 50-day MA (checked separately)
         criteria_8 = self.spy_qualified
         
@@ -197,72 +197,101 @@ class MinerviniScanner:
     def scan_all_tickers(self) -> List[Dict]:
         """
         Scan all active tickers and return results.
-        
+
+        Price source priority:
+          1. IB live price (fetched in a single batch call before the loop)
+          2. Latest closing price from the database (fallback if IB unavailable)
+
+        Historical bars (used for MA / 52-week calculations) always come from
+        the database — fetching 250+ bars per ticker from IB live would be
+        extremely slow and is unnecessary.
+
         Returns:
             List of scan results for all tickers
         """
         # Step 1: Check SPY health first (criterion #8)
         if not self.check_spy_health():
             logger.warning("⚠️ SPY is below 50-day MA - NO stocks will qualify (market health failed)")
-        
+
         # Step 2: Get active tickers
         tickers = self.db.get_active_tickers()
-        
+
         if not tickers:
             logger.warning("⚠️ No active tickers to scan")
             return []
-        
+
         logger.info(f"Scanning {len(tickers)} tickers...")
-        
+
+        # Step 3: Batch-fetch all live prices from IB in one call.
+        # This is far faster than fetching per-symbol (one round-trip vs 90+).
+        live_prices = {}
+        if self.fetcher.connected:
+            logger.info(f"📡 Fetching live prices from IB for {len(tickers)} tickers...")
+            try:
+                live_prices = self.fetcher.fetch_multiple_prices(tickers)
+                logger.info(f"✅ Got live IB prices for {len(live_prices)}/{len(tickers)} tickers")
+            except Exception as e:
+                logger.warning(f"⚠️ IB batch price fetch failed — will fall back to DB prices: {e}")
+        else:
+            logger.warning("⚠️ IB not connected — using database closing prices as current price")
+
         results = []
-        
+
         for i, symbol in enumerate(tickers, 1):
             try:
                 logger.info(f"[{i}/{len(tickers)}] Scanning {symbol}...")
-                
-                # Get historical bars from database
+
+                # Get historical bars from database (needed for MA / 52-week calcs)
                 bars = self.db.get_daily_bars(symbol, limit=300)
-                
+
                 if not bars or len(bars) < 250:
                     logger.warning(f"⚠️ {symbol}: Insufficient historical data in database ({len(bars) if bars else 0} bars)")
                     results.append(self._failed_result(symbol, "No data"))
                     continue
-                
+
                 # Reverse to get chronological order (oldest to newest)
                 bars.reverse()
-                
-                # Use latest bar from database for current price and volume
-                # Convert Decimal to float explicitly
+
                 latest_bar = bars[-1]
-                current_price = float(latest_bar['close']) if latest_bar['close'] else 0.0
+
+                # Use IB live price when available, otherwise fall back to DB close
+                if symbol in live_prices:
+                    current_price = float(live_prices[symbol])
+                    price_source = "IB-live"
+                else:
+                    current_price = float(latest_bar['close']) if latest_bar['close'] else 0.0
+                    price_source = "DB-close"
+
+                # Volume still comes from the latest DB bar (IB intraday volume
+                # is not meaningful for the daily-volume breakout criterion)
                 current_volume = int(latest_bar['volume']) if latest_bar['volume'] else 0
-                
+
                 if current_price == 0:
                     logger.warning(f"⚠️ {symbol}: Price is 0, skipping")
                     results.append(self._failed_result(symbol, "Invalid price"))
                     continue
-                
-                logger.info(f"{symbol}: Price=${current_price:.2f}, Volume={current_volume:,}")
-                
+
+                logger.info(f"{symbol}: Price=${current_price:.2f} ({price_source}), Volume={current_volume:,}")
+
                 # Calculate criteria
                 result = self.calculate_criteria(symbol, bars, current_price, current_volume)
                 results.append(result)
-                
+
                 # Save to database
                 self.db.save_scan_result(result)
-                
+
                 # Log if qualified
                 if result['qualified']:
                     logger.info(f"✅ {symbol} QUALIFIED - All 8 criteria met!")
-                
+
             except Exception as e:
                 logger.error(f"❌ Error scanning {symbol}: {e}")
                 results.append(self._failed_result(symbol, str(e)))
-        
+
         # Summary
         qualified_count = sum(1 for r in results if r['qualified'])
         logger.info(f"✅ Scan complete: {qualified_count}/{len(results)} stocks qualified")
-        
+
         return results
     
     def get_qualified_stocks(self, results: List[Dict]) -> List[str]:
