@@ -24,7 +24,10 @@ function ScannerTable({ results, onRefresh, lastUpdated, onOverrideToggle, onEnt
             <option value="simple">Simple View (✅/❌)</option>
             <option value="detailed">Detailed View (Numbers)</option>
           </select>
+          {/* Refresh button commented out — redundant since WebSocket pushes results automatically every 30s.
+              Keep onRefresh prop wired in App.jsx in case we want to restore it later.
           <button className="btn btn-primary" onClick={onRefresh}>🔄 Refresh</button>
+          */}
         </div>
         {lastUpdated && (
           <div style={{ fontSize: '14px', color: '#10b981', fontWeight: '500' }}>
