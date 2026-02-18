@@ -290,14 +290,13 @@ async def get_version():
         "timestamp": datetime.now().isoformat()
     }
 
-@app.get("/api/status")
-async def get_status():
-    """Get bot status."""
+async def _get_status_dict() -> dict:
+    """Return current bot status as a plain dict (used by both the REST endpoint
+    and the WebSocket loop — avoids calling the FastAPI route handler directly,
+    which would return a Response object instead of a dict)."""
     config = bot_state.db.get_config()
     positions = bot_state.db.get_positions()
     stats = bot_state.db.get_statistics()
-    
-    # Convert all Decimals to floats for JSON serialization
     return convert_decimals({
         "scanner_running": bot_state.scanner_running,
         "ib_connected": bot_state.fetcher.connected,
@@ -307,6 +306,11 @@ async def get_status():
         "statistics": stats,
         "last_scan": len(bot_state.latest_results)
     })
+
+@app.get("/api/status")
+async def get_status():
+    """Get bot status."""
+    return await _get_status_dict()
 
 # ============================================================================
 # SCANNER ENDPOINTS
@@ -638,8 +642,8 @@ async def websocket_endpoint(websocket: WebSocket):
         # Main loop - send updates every 2 seconds
         while True:
             try:
-                # Get fresh status
-                status = await get_status()
+                # Get fresh status using the plain dict helper (not the route handler)
+                status = await _get_status_dict()
                 
                 # Build message in the structure frontend expects: { type: 'status', data: {...} }
                 message = {
