@@ -2,7 +2,9 @@ import React, { useState } from 'react';
 
 function ScannerTable({ results, onRefresh, lastUpdated, onOverrideToggle, onEntryMethodChange }) {
   const [filter, setFilter] = useState('all');
-  const [viewMode, setViewMode] = useState('simple'); // 'simple' or 'detailed'
+  const [viewMode, setViewMode] = useState(
+    () => localStorage.getItem('scannerViewMode') || 'simple'
+  );
 
   const filteredResults = results.filter(r => {
     if (filter === 'qualified') return r.qualified;
@@ -20,7 +22,7 @@ function ScannerTable({ results, onRefresh, lastUpdated, onOverrideToggle, onEnt
             <option value="qualified">Qualified Only</option>
             <option value="failed">Failed Only</option>
           </select>
-          <select value={viewMode} onChange={(e) => setViewMode(e.target.value)} style={{padding: '0.5rem', background: '#111827', border: '1px solid #374151', borderRadius: '0.25rem', color: '#fff'}}>
+          <select value={viewMode} onChange={(e) => { setViewMode(e.target.value); localStorage.setItem('scannerViewMode', e.target.value); }} style={{padding: '0.5rem', background: '#111827', border: '1px solid #374151', borderRadius: '0.25rem', color: '#fff'}}>
             <option value="simple">Simple View (✅/❌)</option>
             <option value="detailed">Detailed View (Numbers)</option>
           </select>
