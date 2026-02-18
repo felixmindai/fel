@@ -40,10 +40,13 @@ class CustomJSONEncoder(json.JSONEncoder):
 # Helper function to convert Decimal to float for JSON serialization
 def convert_decimals(obj):
     """Recursively convert Decimal objects and other non-JSON types to JSON-serializable formats."""
+    import math
     if obj is None:
         return None
     elif isinstance(obj, Decimal):
-        return float(obj)
+        v = float(obj)
+        # Guard against nan/inf produced by Decimal arithmetic
+        return None if (math.isnan(v) or math.isinf(v)) else v
     elif isinstance(obj, (date, datetime)):
         return obj.isoformat()
     elif isinstance(obj, dict):
@@ -52,7 +55,10 @@ def convert_decimals(obj):
         return [convert_decimals(item) for item in obj]
     elif isinstance(obj, bool):
         return obj
-    elif isinstance(obj, (int, float, str)):
+    elif isinstance(obj, float):
+        # nan and inf are not JSON-compliant — return None so the response serialises cleanly
+        return None if (math.isnan(obj) or math.isinf(obj)) else obj
+    elif isinstance(obj, (int, str)):
         return obj
     elif hasattr(obj, '__dict__'):
         # Handle objects with __dict__ (like database row objects)

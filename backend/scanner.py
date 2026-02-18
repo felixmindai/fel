@@ -254,9 +254,12 @@ class MinerviniScanner:
 
                 latest_bar = bars[-1]
 
-                # Use IB live price when available, otherwise fall back to DB close
-                if symbol in live_prices:
-                    current_price = float(live_prices[symbol])
+                # Use IB live price when available, otherwise fall back to DB close.
+                # Guard against nan/inf which IB can return for illiquid/halted symbols.
+                import math
+                ib_price = live_prices.get(symbol)
+                if ib_price is not None and not math.isnan(float(ib_price)) and not math.isinf(float(ib_price)):
+                    current_price = float(ib_price)
                     price_source = "IB-live"
                 else:
                     current_price = float(latest_bar['close']) if latest_bar['close'] else 0.0
