@@ -25,6 +25,7 @@ import json
 from database import Database
 from data_fetcher import DataFetcher, AsyncDataFetcher
 from scanner import MinerviniScanner, PositionMonitor
+from data_updater import data_update_scheduler_loop, run_data_update
 
 # Custom JSON encoder for handling special types
 class CustomJSONEncoder(json.JSONEncoder):
@@ -94,6 +95,7 @@ class ConfigUpdate(BaseModel):
     paper_trading: Optional[bool] = None
     auto_execute: Optional[bool] = None
     default_entry_method: Optional[str] = None
+    data_update_time: Optional[str] = None
 
 class PositionCreate(BaseModel):
     symbol: str
@@ -117,8 +119,10 @@ class BotState:
         self.monitor = PositionMonitor(self.db, self.fetcher)
         self.scanner_running = False
         self.scanner_task = None
+        self.data_updater_task = None
         self.latest_results = []
-        self.websocket_clients = []
+        self.websocket_clients = set()
+        self.ib_connected = False
 
 bot_state = BotState()
 
@@ -184,11 +188,11 @@ async def broadcast_scan_results(results: List[Dict]):
     for client in bot_state.websocket_clients:
         try:
             await client.send_json(message)
-        except:
+        except Exception:
             disconnected.append(client)
-    
+
     for client in disconnected:
-        bot_state.websocket_clients.remove(client)
+        bot_state.websocket_clients.discard(client)
 
 async def broadcast_exit_triggers(exits: List[Dict]):
     """Broadcast exit triggers to all WebSocket clients."""
@@ -208,11 +212,11 @@ async def broadcast_exit_triggers(exits: List[Dict]):
     for client in bot_state.websocket_clients:
         try:
             await client.send_json(message)
-        except:
+        except Exception:
             disconnected.append(client)
-    
+
     for client in disconnected:
-        bot_state.websocket_clients.remove(client)
+        bot_state.websocket_clients.discard(client)
 
 # ============================================================================
 # FASTAPI APP
@@ -248,10 +252,16 @@ async def startup():
     # Connect to IB
     connected = await bot_state.async_fetcher.connect()
     if connected:
+        bot_state.ib_connected = True
         logger.info("✅ Connected to Interactive Brokers")
     else:
         logger.warning("⚠️ Could not connect to IB - some features may be limited")
-    
+
+    # Start the scheduled data-update background task
+    bot_state.data_updater_task = asyncio.create_task(
+        data_update_scheduler_loop(bot_state)
+    )
+
     logger.info("✅ Bot API ready")
 
 @app.on_event("shutdown")
@@ -264,7 +274,11 @@ async def shutdown():
         bot_state.scanner_running = False
         if bot_state.scanner_task:
             bot_state.scanner_task.cancel()
-    
+
+    # Stop data updater scheduler
+    if bot_state.data_updater_task:
+        bot_state.data_updater_task.cancel()
+
     # Disconnect from IB
     await bot_state.async_fetcher.disconnect()
     
@@ -331,10 +345,12 @@ async def start_scanner():
     # Connect to IB if not already connected
     if not bot_state.fetcher.connected:
         connected = await bot_state.async_fetcher.connect()
-        if not connected:
+        if connected:
+            bot_state.ib_connected = True
+        else:
             # Allow scanner to start anyway — it will use DB prices as fallback
             logger.warning("⚠️ Could not connect to IB — scanner will use DB closing prices")
-    
+
     bot_state.scanner_running = True
     bot_state.db.set_scanner_status(True)
     
@@ -621,17 +637,38 @@ async def update_config(config: ConfigUpdate):
         'position_size_usd': config.position_size_usd if config.position_size_usd is not None else current_config['position_size_usd'],
         'paper_trading': config.paper_trading if config.paper_trading is not None else current_config['paper_trading'],
         'auto_execute': config.auto_execute if config.auto_execute is not None else current_config['auto_execute'],
-        'default_entry_method': config.default_entry_method if config.default_entry_method is not None else current_config.get('default_entry_method', 'prev_close')
+        'default_entry_method': config.default_entry_method if config.default_entry_method is not None else current_config.get('default_entry_method', 'prev_close'),
+        'data_update_time': config.data_update_time if config.data_update_time is not None else current_config.get('data_update_time', '17:00')
     }
     
     success = bot_state.db.update_config(updated_config)
-    
+
     if not success:
         raise HTTPException(status_code=500, detail="Failed to update configuration")
-    
+
     logger.info("✅ Configuration updated")
-    
+
     return {"success": True, "config": updated_config}
+
+# ============================================================================
+# DATA UPDATE ENDPOINTS
+# ============================================================================
+
+@app.post("/api/data/update")
+async def trigger_data_update():
+    """Manually trigger a data update (fire-and-forget)."""
+    status = bot_state.db.get_data_update_status()
+    if status.get('data_update_status') == 'running':
+        raise HTTPException(status_code=409, detail="Data update already in progress")
+
+    asyncio.create_task(run_data_update(bot_state))
+    return {"success": True, "message": "Data update started"}
+
+
+@app.get("/api/data/status")
+async def get_data_update_status():
+    """Get current data update status."""
+    return convert_decimals(bot_state.db.get_data_update_status())
 
 # ============================================================================
 # WEBSOCKET
@@ -642,7 +679,7 @@ async def websocket_endpoint(websocket: WebSocket):
     """WebSocket endpoint for real-time updates."""
     try:
         await websocket.accept()
-        bot_state.websocket_clients.append(websocket)
+        bot_state.websocket_clients.add(websocket)
         logger.info(f"✅ WebSocket client connected (total: {len(bot_state.websocket_clients)}) [v3.0-MANUAL-JSON]")
         
         # Main loop - send updates every 2 seconds
@@ -684,7 +721,18 @@ async def websocket_endpoint(websocket: WebSocket):
                         "win_rate": float(stats.get('win_rate') or 0.0),
                         "total_pnl": float(stats.get('total_pnl') or 0.0)
                     }
-                
+
+                # Add data update status
+                try:
+                    du = convert_decimals(bot_state.db.get_data_update_status())
+                    message["data"]["data_update"] = {
+                        "last_update": du.get('last_data_update'),
+                        "status": du.get('data_update_status', 'idle'),
+                        "error": du.get('data_update_error')
+                    }
+                except Exception:
+                    pass  # non-critical — don't break the WS loop
+
                 # Send using manual JSON encoding to catch serialization errors
                 try:
                     json_string = json.dumps(message, cls=CustomJSONEncoder)
@@ -726,8 +774,7 @@ async def websocket_endpoint(websocket: WebSocket):
         import traceback
         logger.error(traceback.format_exc())
     finally:
-        if websocket in bot_state.websocket_clients:
-            bot_state.websocket_clients.remove(websocket)
+        bot_state.websocket_clients.discard(websocket)
         logger.info(f"WebSocket cleanup (remaining: {len(bot_state.websocket_clients)})")
 
 # ============================================================================

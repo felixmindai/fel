@@ -114,6 +114,7 @@ function App() {
 
   const [lastUpdated, setLastUpdated] = useState(null);
   const [lastScanUpdate, setLastScanUpdate] = useState(null);
+  const [dataUpdateStatus, setDataUpdateStatus] = useState(null);
 
   // ─── WebSocket with auto-reconnect ────────────────────────────────────────
   const connectWebSocket = useCallback(() => {
@@ -145,11 +146,35 @@ function App() {
       if (data.type === 'status') {
         setStatus(data.data);
         setLastUpdated(new Date());
+        // Sync data_update state from piggyback field so UI survives WS reconnects
+        if (data.data?.data_update) {
+          setDataUpdateStatus(prev => ({
+            ...(prev || {}),
+            ...data.data.data_update
+          }));
+        }
       } else if (data.type === 'scan_results') {
         setScanResults(data.results || []);
         setLastScanUpdate(new Date());
       } else if (data.type === 'exit_triggers') {
         console.warn('🛑 Exit triggers:', data.exits);
+      } else if (data.type === 'data_update_started') {
+        setDataUpdateStatus({ status: 'running', total: data.data?.total || 0, done: 0 });
+      } else if (data.type === 'data_update_progress') {
+        setDataUpdateStatus(prev => ({
+          ...(prev || {}),
+          status: 'running',
+          done: data.data?.done || 0,
+          total: data.data?.total || 0,
+          current_symbol: data.data?.current_symbol
+        }));
+      } else if (data.type === 'data_update_complete') {
+        setDataUpdateStatus(prev => ({
+          ...(prev || {}),
+          status: data.data?.status || 'success',
+          error: data.data?.error || null,
+          last_update: data.data?.status === 'success' ? new Date().toISOString() : prev?.last_update
+        }));
       }
     };
 
@@ -256,6 +281,23 @@ function App() {
     }
   };
 
+  const handleUpdateDataNow = async () => {
+    try {
+      const res = await fetch(`${API_BASE}/data/update`, { method: 'POST' });
+      if (res.status === 409) {
+        alert('⏳ Data update already in progress');
+        return;
+      }
+      if (!res.ok) {
+        const err = await res.json().catch(() => ({}));
+        alert('❌ Failed to start update: ' + (err.detail || res.statusText));
+      }
+      // Progress will arrive via WebSocket broadcasts automatically
+    } catch (error) {
+      alert('❌ Error starting data update: ' + error.message);
+    }
+  };
+
   const qualifiedCount = scanResults.filter(r => r.qualified).length;
 
   return (
@@ -298,11 +340,13 @@ function App() {
       </header>
 
       {status && (
-        <StatusBar 
+        <StatusBar
           status={status}
           qualifiedCount={qualifiedCount}
           totalTickers={scanResults.length}
           lastScanUpdate={lastScanUpdate}
+          dataUpdateStatus={dataUpdateStatus}
+          onUpdateDataNow={handleUpdateDataNow}
         />
       )}
 

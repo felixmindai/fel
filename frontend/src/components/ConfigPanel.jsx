@@ -8,7 +8,8 @@ function ConfigPanel({ config, onUpdate }) {
     position_size_usd: 10000,
     paper_trading: true,
     auto_execute: false,
-    default_entry_method: 'prev_close'
+    default_entry_method: 'prev_close',
+    data_update_time: '17:00'
   });
 
   useEffect(() => {
@@ -19,7 +20,8 @@ function ConfigPanel({ config, onUpdate }) {
         position_size_usd: config.position_size_usd || 10000,
         paper_trading: config.paper_trading !== false,
         auto_execute: config.auto_execute === true,
-        default_entry_method: config.default_entry_method || 'prev_close'
+        default_entry_method: config.default_entry_method || 'prev_close',
+        data_update_time: config.data_update_time || '17:00'
       });
     }
   }, [config]);
@@ -122,6 +124,19 @@ function ConfigPanel({ config, onUpdate }) {
         </div>
 
         <div className="form-group">
+          <label>Data Update Time (ET, 24h format)</label>
+          <input
+            type="text"
+            placeholder="17:00"
+            value={formData.data_update_time}
+            onChange={(e) => setFormData({ ...formData, data_update_time: e.target.value })}
+          />
+          <small style={{ color: '#6b7280', display: 'block', marginTop: '0.25rem' }}>
+            Weekdays only. Format: HH:MM (e.g. 17:00 = 5:00 PM ET). Takes effect on the next scheduler cycle.
+          </small>
+        </div>
+
+        <div className="form-group">
           <div className="toggle">
             <input
               type="checkbox"
@@ -175,6 +190,7 @@ function ConfigPanel({ config, onUpdate }) {
           <li style={{ marginBottom: '0.5rem' }}>
             {formData.auto_execute ? '🤖 Auto-Execute: ON' : '👤 Manual Execute: ON'}
           </li>
+          <li style={{ marginBottom: '0.5rem' }}>🕔 Data Update Time: {formData.data_update_time} ET (weekdays)</li>
         </ul>
       </div>
     </div>

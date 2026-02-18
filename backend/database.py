@@ -218,17 +218,47 @@ class Database:
             
             # Add default_entry_method column if it doesn't exist (migration)
             cursor.execute("""
-                DO $$ 
+                DO $$
                 BEGIN
                     IF NOT EXISTS (
-                        SELECT 1 FROM information_schema.columns 
+                        SELECT 1 FROM information_schema.columns
                         WHERE table_name='bot_config' AND column_name='default_entry_method'
                     ) THEN
                         ALTER TABLE bot_config ADD COLUMN default_entry_method VARCHAR(50) DEFAULT 'prev_close';
                     END IF;
                 END $$;
             """)
-            
+
+            # Add data update tracking columns if they don't exist (migration)
+            cursor.execute("""
+                DO $$
+                BEGIN
+                    IF NOT EXISTS (
+                        SELECT 1 FROM information_schema.columns
+                        WHERE table_name='bot_config' AND column_name='last_data_update'
+                    ) THEN
+                        ALTER TABLE bot_config
+                            ADD COLUMN last_data_update TIMESTAMP DEFAULT NULL,
+                            ADD COLUMN data_update_status VARCHAR(20) DEFAULT 'idle',
+                            ADD COLUMN data_update_error TEXT DEFAULT NULL;
+                    END IF;
+                END $$;
+            """)
+
+            # Add configurable update time column if it doesn't exist (migration)
+            cursor.execute("""
+                DO $$
+                BEGIN
+                    IF NOT EXISTS (
+                        SELECT 1 FROM information_schema.columns
+                        WHERE table_name='bot_config' AND column_name='data_update_time'
+                    ) THEN
+                        ALTER TABLE bot_config
+                            ADD COLUMN data_update_time VARCHAR(5) DEFAULT '17:00';
+                    END IF;
+                END $$;
+            """)
+
             # Create indexes
             cursor.execute("CREATE INDEX IF NOT EXISTS idx_daily_bars_symbol ON daily_bars(symbol)")
             cursor.execute("CREATE INDEX IF NOT EXISTS idx_daily_bars_date ON daily_bars(date)")
@@ -773,13 +803,14 @@ class Database:
         
         try:
             cursor.execute("""
-                UPDATE bot_config 
+                UPDATE bot_config
                 SET stop_loss_pct = %s,
                     max_positions = %s,
                     position_size_usd = %s,
                     paper_trading = %s,
                     auto_execute = %s,
                     default_entry_method = %s,
+                    data_update_time = %s,
                     updated_at = CURRENT_TIMESTAMP
                 WHERE id = 1
             """, (
@@ -788,7 +819,8 @@ class Database:
                 config.get('position_size_usd'),
                 config.get('paper_trading'),
                 config.get('auto_execute'),
-                config.get('default_entry_method', 'prev_close')
+                config.get('default_entry_method', 'prev_close'),
+                config.get('data_update_time', '17:00')
             ))
             
             conn.commit()
@@ -807,17 +839,17 @@ class Database:
         """Update scanner running status."""
         conn = self.get_connection()
         cursor = conn.cursor()
-        
+
         try:
             cursor.execute("""
-                UPDATE bot_config 
+                UPDATE bot_config
                 SET scanner_running = %s, updated_at = CURRENT_TIMESTAMP
                 WHERE id = 1
             """, (running,))
-            
+
             conn.commit()
             return True
-            
+
         except Exception as e:
             conn.rollback()
             logger.error(f"❌ Error updating scanner status: {e}")
@@ -825,7 +857,59 @@ class Database:
         finally:
             cursor.close()
             conn.close()
-    
+
+    def get_data_update_status(self) -> Dict:
+        """Get last data update time, status, error, and configured update time."""
+        conn = self.get_connection()
+        cursor = conn.cursor(cursor_factory=RealDictCursor)
+        try:
+            cursor.execute("""
+                SELECT last_data_update, data_update_status, data_update_error, data_update_time
+                FROM bot_config WHERE id = 1
+            """)
+            row = cursor.fetchone()
+            return dict(row) if row else {
+                'last_data_update': None,
+                'data_update_status': 'idle',
+                'data_update_error': None,
+                'data_update_time': '17:00'
+            }
+        finally:
+            cursor.close()
+            conn.close()
+
+    def set_data_update_status(self, status: str, error: str = None) -> bool:
+        """Update data update status, optionally clearing or setting error and timestamp."""
+        conn = self.get_connection()
+        cursor = conn.cursor()
+        try:
+            if status == 'success':
+                cursor.execute("""
+                    UPDATE bot_config
+                    SET data_update_status = %s,
+                        last_data_update = CURRENT_TIMESTAMP,
+                        data_update_error = NULL,
+                        updated_at = CURRENT_TIMESTAMP
+                    WHERE id = 1
+                """, (status,))
+            else:
+                cursor.execute("""
+                    UPDATE bot_config
+                    SET data_update_status = %s,
+                        data_update_error = %s,
+                        updated_at = CURRENT_TIMESTAMP
+                    WHERE id = 1
+                """, (status, error))
+            conn.commit()
+            return True
+        except Exception as e:
+            conn.rollback()
+            logger.error(f"❌ Error updating data update status: {e}")
+            return False
+        finally:
+            cursor.close()
+            conn.close()
+
     # ==================== STATISTICS ====================
     
     def get_statistics(self) -> Dict:
