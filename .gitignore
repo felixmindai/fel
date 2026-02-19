@@ -83,6 +83,11 @@ trades.log
 scanner.log
 positions.log
 
+# ==================== CLAUDE CODE ====================
+# Claude Code internal worktrees and local session settings
+.claude/worktrees/
+.claude/settings.local.json
+
 # ==================== IDE / EDITORS ====================
 # VS Code
 .vscode/
