@@ -10,6 +10,71 @@ import { API_BASE, WS_URL } from './config';
 // Reconnect delays: 1s, 2s, 4s, 8s, 16s, 30s (capped)
 const getReconnectDelay = (attempt) => Math.min(1000 * Math.pow(2, attempt), 30000);
 
+// ─── Market status helpers (ET-aware) ────────────────────────────────────────
+function _getMarketStatus() {
+  const now = new Date();
+  const et  = new Date(now.toLocaleString('en-US', { timeZone: 'America/New_York' }));
+  const day  = et.getDay();
+  const mins = et.getHours() * 60 + et.getMinutes();
+  const open = 9 * 60 + 30, close = 16 * 60;
+  if (day === 0 || day === 6) return { open: false, label: 'weekend' };
+  if (mins < open)  return { open: false, label: 'pre-market',  nextOpen: _nextOpenStr(et, open) };
+  if (mins >= close) return { open: false, label: 'after-hours', nextOpen: _nextOpenStr(et, open) };
+  return { open: true, label: 'open' };
+}
+function _nextOpenStr(etNow, openMins) {
+  const d = new Date(etNow);
+  d.setHours(Math.floor(openMins / 60), openMins % 60, 0, 0);
+  if (d <= etNow) d.setDate(d.getDate() + 1);
+  while (d.getDay() === 0 || d.getDay() === 6) d.setDate(d.getDate() + 1);
+  return d.toLocaleString('en-US', { timeZone: 'America/New_York', weekday: 'short', hour: '2-digit', minute: '2-digit' });
+}
+
+// ─── Scanner status bar (lives in tab nav, always visible) ───────────────────
+function ScannerStatusBar({ scannerRunning, lastUpdated }) {
+  const [, setTick] = React.useState(0);
+  React.useEffect(() => {
+    const id = setInterval(() => setTick(t => t + 1), 1000);
+    return () => clearInterval(id);
+  }, []);
+
+  const mkt     = _getMarketStatus();
+  const secsAgo = lastUpdated ? Math.floor((new Date() - lastUpdated) / 1000) : null;
+  const agoStr  = secsAgo == null ? null
+    : secsAgo < 60   ? `${secsAgo}s ago`
+    : secsAgo < 3600 ? `${Math.floor(secsAgo / 60)}m ago`
+    : `${Math.floor(secsAgo / 3600)}h ago`;
+  const lastScanStr = lastUpdated
+    ? lastUpdated.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
+    : null;
+
+  let icon, mainColor, mainText, subText;
+
+  if (!scannerRunning) {
+    icon = '⏹'; mainColor = '#ef4444'; mainText = 'Scanner Stopped';
+    subText = lastScanStr ? ` — Last scan: ${lastScanStr} (${agoStr})` : '';
+  } else if (mkt.open) {
+    const liveSec = lastUpdated
+      ? lastUpdated.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' })
+      : null;
+    icon = '🟢'; mainColor = '#10b981'; mainText = 'Market Open';
+    subText = liveSec ? ` — Last scan: ${liveSec} (${agoStr})` : '';
+  } else {
+    const icons  = { weekend: '📅', 'pre-market': '🌅', 'after-hours': '🌙' };
+    const labels = { weekend: 'Closed (Weekend)', 'pre-market': 'Pre-Market', 'after-hours': 'After Hours' };
+    icon = icons[mkt.label]; mainColor = mkt.label === 'pre-market' ? '#f59e0b' : '#6b7280';
+    mainText = labels[mkt.label];
+    subText  = mkt.nextOpen ? ` — Resumes ${mkt.nextOpen} ET` : '';
+  }
+
+  return (
+    <div style={{ marginLeft: 'auto', fontSize: '12px', fontWeight: '500', whiteSpace: 'nowrap', paddingRight: '0.5rem', display: 'flex', alignItems: 'center' }}>
+      <span style={{ color: mainColor }}>{icon} {mainText}</span>
+      <span style={{ color: '#4b5563', fontWeight: '400' }}>{subText}</span>
+    </div>
+  );
+}
+
 function App() {
   const [activeTab, setActiveTab] = useState('scanner');
   const [status, setStatus] = useState(null);
@@ -379,8 +444,8 @@ function App() {
       )}
 
       <nav className="tab-nav">
-        <button 
-          className={activeTab === 'scanner' ? 'active' : ''} 
+        <button
+          className={activeTab === 'scanner' ? 'active' : ''}
           onClick={() => setActiveTab('scanner')}
         >
           🔍 Scanner ({qualifiedCount})
@@ -391,18 +456,22 @@ function App() {
         >
           💼 Portfolio ({positions.length > 0 ? positions.length : (status?.open_positions || 0)})
         </button>
-        <button 
-          className={activeTab === 'tickers' ? 'active' : ''} 
+        <button
+          className={activeTab === 'tickers' ? 'active' : ''}
           onClick={() => setActiveTab('tickers')}
         >
           📋 Tickers ({status?.active_tickers || 0})
         </button>
-        <button 
-          className={activeTab === 'config' ? 'active' : ''} 
+        <button
+          className={activeTab === 'config' ? 'active' : ''}
           onClick={() => setActiveTab('config')}
         >
           ⚙️ Settings
         </button>
+        <ScannerStatusBar
+          scannerRunning={status?.scanner_running ?? false}
+          lastUpdated={lastScanUpdate}
+        />
       </nav>
 
       <main className="app-content">
@@ -415,12 +484,9 @@ function App() {
               manually_set: !!entryMethods[r.symbol] || (r.entry_method && r.entry_method !== config?.default_entry_method)
             }))}
             onRefresh={fetchScanResults}
-            lastUpdated={lastScanUpdate}
             onOverrideToggle={handleOverrideToggle}
             onEntryMethodChange={handleEntryMethodChange}
-            defaultEntryMethod={config?.default_entry_method || 'prev_close'}
             openPositionSymbols={openPositionSymbols}
-            scannerRunning={status?.scanner_running ?? false}
           />
         )}
         {activeTab === 'portfolio' && (
