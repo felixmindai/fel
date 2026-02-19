@@ -301,6 +301,19 @@ async def broadcast_exit_triggers(exits: List[Dict]):
     for client in disconnected:
         bot_state.websocket_clients.discard(client)
 
+async def broadcast_message(message: dict):
+    """Broadcast an arbitrary message to all WebSocket clients."""
+    if not bot_state.websocket_clients:
+        return
+    disconnected = []
+    for client in bot_state.websocket_clients:
+        try:
+            await client.send_json(message)
+        except Exception:
+            disconnected.append(client)
+    for client in disconnected:
+        bot_state.websocket_clients.discard(client)
+
 # ============================================================================
 # FASTAPI APP
 # ============================================================================
@@ -724,9 +737,19 @@ async def close_position(symbol: str, exit_price: Optional[float] = None):
     
     # Close position
     bot_state.db.close_position(symbol)
-    
+
     logger.info(f"✅ Closed position: {symbol} | P&L: ${pnl:.2f} ({pnl_pct:.2f}%)")
-    
+
+    # Broadcast to all WS clients so every open browser tab refreshes immediately
+    await broadcast_message({
+        'type': 'orders_executed',
+        'timestamp': datetime.now().isoformat(),
+        'buys': 0,
+        'exits': 1,
+        'source': 'manual_close',
+        'symbol': symbol
+    })
+
     return {
         "success": True,
         "exit_price": exit_price,

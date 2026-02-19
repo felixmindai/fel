@@ -490,10 +490,11 @@ function App() {
           />
         )}
         {activeTab === 'portfolio' && (
-          <PortfolioPanel 
-            positions={positions} 
+          <PortfolioPanel
+            positions={positions}
             config={config}
-            onRefresh={fetchPositions} 
+            onRefresh={fetchPositions}
+            onStatusRefresh={fetchStatus}
           />
         )}
         {activeTab === 'tickers' && (

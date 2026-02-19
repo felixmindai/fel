@@ -54,7 +54,7 @@ function applySort(rows, col, dir) {
 }
 // ──────────────────────────────────────────────────────────────────────────
 
-function PortfolioPanel({ positions, config, onRefresh }) {
+function PortfolioPanel({ positions, config, onRefresh, onStatusRefresh }) {
   const [sortCol, setSortCol] = useState(null);
   const [sortDir, setSortDir] = useState(null);
 
@@ -107,7 +107,8 @@ function PortfolioPanel({ positions, config, onRefresh }) {
       }
       if (data.success) {
         alert(`✅ Position closed: ${symbol}\nP&L: $${data.pnl.toFixed(2)} (${data.pnl_pct.toFixed(2)}%)`);
-        onRefresh();
+        onRefresh();         // re-fetch positions list → removes row from table
+        onStatusRefresh?.(); // re-fetch status → updates summary cards + tab count
       }
     } catch (error) {
       alert('❌ Error closing position: ' + error.message);
