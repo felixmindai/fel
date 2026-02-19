@@ -74,36 +74,37 @@ function TickerManager({ onUpdate }) {
 
   return (
     <div>
-      <h2>Ticker Management</h2>
-      <p style={{ color: '#6b7280', marginBottom: '2rem' }}>
-        Total: {activeTickers.length} active tickers (max 100 for delayed data)
-      </p>
+      <div style={{ display: 'flex', alignItems: 'baseline', gap: '1rem', marginBottom: '0.75rem' }}>
+        <h2 style={{ margin: 0 }}>Ticker Management</h2>
+        <span style={{ color: '#6b7280', fontSize: '0.85rem' }}>
+          {activeTickers.length} active tickers (max 100 for delayed data)
+        </span>
+      </div>
 
-      <div style={{ background: '#1a1f2e', padding: '1.5rem', borderRadius: '0.5rem', marginBottom: '2rem' }}>
-        <h3 style={{ marginBottom: '1rem' }}>Add New Ticker</h3>
-        <div style={{ display: 'grid', gridTemplateColumns: '2fr 3fr 2fr 1fr', gap: '1rem' }}>
+      <div style={{ background: '#1a1f2e', padding: '0.75rem 1rem', borderRadius: '0.5rem', marginBottom: '1rem', border: '1px solid #374151' }}>
+        <div style={{ display: 'grid', gridTemplateColumns: '2fr 3fr 2fr auto', gap: '0.6rem', alignItems: 'center' }}>
           <input
             type="text"
             placeholder="Symbol (e.g., AAPL)"
             value={newSymbol}
             onChange={(e) => setNewSymbol(e.target.value.toUpperCase())}
-            style={{ padding: '0.75rem', background: '#111827', border: '1px solid #374151', borderRadius: '0.5rem', color: '#fff' }}
+            style={{ padding: '0.4rem 0.6rem', fontSize: '0.85rem', background: '#111827', border: '1px solid #374151', borderRadius: '0.375rem', color: '#fff' }}
           />
           <input
             type="text"
             placeholder="Name (optional)"
             value={newName}
             onChange={(e) => setNewName(e.target.value)}
-            style={{ padding: '0.75rem', background: '#111827', border: '1px solid #374151', borderRadius: '0.5rem', color: '#fff' }}
+            style={{ padding: '0.4rem 0.6rem', fontSize: '0.85rem', background: '#111827', border: '1px solid #374151', borderRadius: '0.375rem', color: '#fff' }}
           />
           <input
             type="text"
             placeholder="Sector (optional)"
             value={newSector}
             onChange={(e) => setNewSector(e.target.value)}
-            style={{ padding: '0.75rem', background: '#111827', border: '1px solid #374151', borderRadius: '0.5rem', color: '#fff' }}
+            style={{ padding: '0.4rem 0.6rem', fontSize: '0.85rem', background: '#111827', border: '1px solid #374151', borderRadius: '0.375rem', color: '#fff' }}
           />
-          <button className="btn btn-primary" onClick={handleAdd}>Add</button>
+          <button className="btn btn-primary" style={{ padding: '0.4rem 1rem', fontSize: '0.85rem', whiteSpace: 'nowrap' }} onClick={handleAdd}>Add Ticker</button>
         </div>
       </div>
 
@@ -128,9 +129,9 @@ function TickerManager({ onUpdate }) {
               <td>{ticker.active ? '✅ Active' : '❌ Inactive'}</td>
               <td>
                 {ticker.active && (
-                  <button 
-                    className="btn btn-danger" 
-                    style={{ padding: '0.5rem 1rem', fontSize: '0.875rem' }}
+                  <button
+                    className="btn btn-danger"
+                    style={{ padding: '0.25rem 0.75rem', fontSize: '0.8rem' }}
                     onClick={() => handleRemove(ticker.symbol)}
                   >
                     Remove

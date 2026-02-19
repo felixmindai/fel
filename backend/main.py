@@ -148,47 +148,97 @@ bot_state = BotState()
 # SCANNER BACKGROUND TASK
 # ============================================================================
 
+def _seconds_until_market_open() -> float:
+    """
+    Return the number of seconds until the next regular market open (09:30 ET,
+    Mon-Fri). Returns 0 if the market is currently open.
+    """
+    from scanner import MinerviniScanner
+    from zoneinfo import ZoneInfo
+    from datetime import time as dtime, timedelta
+    _ET = ZoneInfo("America/New_York")
+    now = datetime.now(_ET)
+
+    if MinerviniScanner._market_is_open():
+        return 0.0
+
+    # Walk forward day by day until we find the next weekday
+    candidate = now.replace(hour=9, minute=30, second=0, microsecond=0)
+    if candidate <= now:
+        candidate += timedelta(days=1)
+    while candidate.weekday() >= 5:          # skip Saturday (5) and Sunday (6)
+        candidate += timedelta(days=1)
+
+    return (candidate - now).total_seconds()
+
+
 async def scanner_loop():
-    """Background task that runs the scanner continuously."""
+    """
+    Background task that runs the scanner during market hours only.
+
+    Behaviour:
+      • Market OPEN  → scan every N seconds (configured interval), check exits.
+      • Market CLOSED → log once and sleep until 09:30 ET next trading day.
+        No DB queries, no IB calls, no wasted cycles overnight / weekends.
+    """
+    from scanner import MinerviniScanner
     logger.info("🚀 Scanner loop started")
-    
+
     while bot_state.scanner_running:
         try:
+            # ── Off-hours gate ────────────────────────────────────────────
+            secs = _seconds_until_market_open()
+            if secs > 0:
+                from datetime import timedelta
+                _ET = ET
+                wake = datetime.now(_ET) + timedelta(seconds=secs)
+                wake_str = wake.strftime('%a %b %d %I:%M %p ET').replace(' 0', ' ')
+                hrs  = int(secs // 3600)
+                mins = int((secs % 3600) // 60)
+                logger.info(
+                    f"🌙 Market closed — scanner sleeping {hrs}h {mins}m "
+                    f"until {wake_str}"
+                )
+                # Sleep in short chunks so Stop Scanner works immediately
+                slept = 0.0
+                while slept < secs and bot_state.scanner_running:
+                    chunk = min(60.0, secs - slept)
+                    await asyncio.sleep(chunk)
+                    slept += chunk
+                    # Re-check: DST change or manual start could shift the gate
+                    if MinerviniScanner._market_is_open():
+                        break
+                continue   # re-enter loop top — market may now be open
+
+            # ── Market is open: run scan + exit-trigger check ─────────────
             logger.info("🔍 Running scanner...")
-            
-            # Run scanner in executor to avoid blocking
             results = await asyncio.get_event_loop().run_in_executor(
                 None,
                 bot_state.scanner.scan_all_tickers
             )
-            
             bot_state.latest_results = results
-            
-            # Broadcast results to WebSocket clients
             await broadcast_scan_results(results)
-            
-            # Check for exit triggers
+
             logger.info("🔍 Checking position exit triggers...")
             exits = await asyncio.get_event_loop().run_in_executor(
                 None,
                 bot_state.monitor.check_exit_triggers
             )
-            
             if exits:
                 logger.warning(f"⚠️ {len(exits)} position(s) need to exit")
                 await broadcast_exit_triggers(exits)
-            
+
             # Read interval dynamically so UI changes take effect without restart
-            _cfg = bot_state.db.get_config()
+            _cfg      = bot_state.db.get_config()
             _interval = int(_cfg.get('scanner_interval_seconds') or 30)
             await asyncio.sleep(_interval)
-            
+
         except Exception as e:
             logger.error(f"❌ Scanner loop error: {e}")
             import traceback
             logger.error(traceback.format_exc())
-            await asyncio.sleep(10)  # Short retry on error
-    
+            await asyncio.sleep(10)
+
     logger.info("🛑 Scanner loop stopped")
 
 async def broadcast_scan_results(results: List[Dict]):

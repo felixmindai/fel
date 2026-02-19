@@ -1,6 +1,11 @@
 import React, { useState } from 'react';
 import { API_BASE } from '../config';
 
+// ─── Number formatters ──────────────────────────────────────────────────────
+const fmt$   = v => v == null ? '--' : '$' + Number(v).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+const fmtPct = v => v == null ? '--' : Number(v).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 }) + '%';
+const R = { textAlign: 'right' };
+
 // ─── Sorting helpers ───────────────────────────────────────────────────────
 const ASC  = 'asc';
 const DESC = 'desc';
@@ -120,14 +125,14 @@ function PortfolioPanel({ positions, config, onRefresh }) {
           <tr>
             <Th col="symbol">Symbol</Th>
             <Th col="entry_date">Entry Date</Th>
-            <Th col="entry_price">Fill Price</Th>
-            <Th col="current_price">Current Price</Th>
-            <Th col="quantity">Quantity</Th>
-            <Th col="cost_basis">Cost Basis</Th>
-            <Th col="current_value">Current Value</Th>
-            <Th col="pnl">P&amp;L $</Th>
-            <Th col="pnl_pct">P&amp;L %</Th>
-            <Th col="stop_loss">Stop Loss</Th>
+            <Th col="entry_price" style={R}>Fill Price</Th>
+            <Th col="current_price" style={R}>Current Price</Th>
+            <Th col="quantity" style={R}>Qty</Th>
+            <Th col="cost_basis" style={R}>Cost Basis</Th>
+            <Th col="current_value" style={R}>Cur. Value</Th>
+            <Th col="pnl" style={R}>P&amp;L $</Th>
+            <Th col="pnl_pct" style={R}>P&amp;L %</Th>
+            <Th col="stop_loss" style={R}>Stop Loss</Th>
             <th>Status</th>
             <th>Action</th>
           </tr>
@@ -151,27 +156,27 @@ function PortfolioPanel({ positions, config, onRefresh }) {
               <tr key={pos.symbol} style={rowStyle}>
                 <td><strong>{pos.symbol}</strong></td>
                 <td>{pos.entry_date}</td>
-                <td>
+                <td style={R}>
                   <div style={{ lineHeight: '1.2' }}>
-                    <span>${pos.entry_price?.toFixed(2)}</span>
+                    <span>{fmt$(pos.entry_price)}</span>
                     {pos.submitted_price && Math.abs(pos.submitted_price - pos.entry_price) >= 0.005 && (
                       <div style={{ fontSize: '0.7rem', color: '#6b7280', marginTop: '2px' }}>
-                        submitted: ${pos.submitted_price?.toFixed(2)}
+                        submitted: {fmt$(pos.submitted_price)}
                       </div>
                     )}
                   </div>
                 </td>
-                <td>${pos.current_price?.toFixed(2) || '--'}</td>
-                <td>{pos.quantity}</td>
-                <td>${pos.cost_basis?.toFixed(2)}</td>
-                <td>${pos.current_value?.toFixed(2) || '--'}</td>
-                <td style={{ color: pnlColor, fontWeight: 'bold' }}>
-                  ${pos.pnl?.toFixed(2) || '--'}
+                <td style={R}>{fmt$(pos.current_price)}</td>
+                <td style={R}>{pos.quantity}</td>
+                <td style={R}>{fmt$(pos.cost_basis)}</td>
+                <td style={R}>{fmt$(pos.current_value)}</td>
+                <td style={{ ...R, color: pnlColor, fontWeight: 'bold' }}>
+                  {fmt$(pos.pnl)}
                 </td>
-                <td style={{ color: pnlColor, fontWeight: 'bold' }}>
-                  {pos.pnl_pct?.toFixed(2) || '--'}%
+                <td style={{ ...R, color: pnlColor, fontWeight: 'bold' }}>
+                  {fmtPct(pos.pnl_pct)}
                 </td>
-                <td>${pos.stop_loss?.toFixed(2)}</td>
+                <td style={R}>{fmt$(pos.stop_loss)}</td>
                 <td>
                   {pendingExit ? (
                     <span style={{
@@ -193,7 +198,7 @@ function PortfolioPanel({ positions, config, onRefresh }) {
                 <td>
                   <button
                     className="btn btn-danger"
-                    style={{ padding: '0.5rem 1rem', fontSize: '0.875rem' }}
+                    style={{ padding: '0.25rem 0.75rem', fontSize: '0.8rem' }}
                     onClick={() => handleClosePosition(pos.symbol)}
                   >
                     Close

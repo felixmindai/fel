@@ -1,5 +1,11 @@
 import React, { useState, useEffect } from 'react';
 
+// ─── Number formatters ──────────────────────────────────────────────────────
+const fmt$  = v => v == null ? '--' : '$' + Number(v).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+const fmtPct = v => v == null ? '--' : Number(v).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 }) + '%';
+const fmtVol = v => v == null ? '--' : (v >= 1_000_000 ? (v / 1_000_000).toFixed(1) + 'M' : (v / 1000).toFixed(0) + 'K');
+const R = { textAlign: 'right' }; // shorthand right-align style
+
 // ─── Market-aware scan status helpers ──────────────────────────────────────
 function getMarketStatus() {
   // All times in ET
@@ -68,7 +74,7 @@ function applySort(rows, col, dir) {
 }
 // ──────────────────────────────────────────────────────────────────────────
 
-function ScannerTable({ results, onRefresh, lastUpdated, onOverrideToggle, onEntryMethodChange, openPositionSymbols }) {
+function ScannerTable({ results, onRefresh, lastUpdated, onOverrideToggle, onEntryMethodChange, openPositionSymbols, scannerRunning }) {
   const [filter, setFilter]     = useState('all');
   const [viewMode, setViewMode] = useState(
     () => localStorage.getItem('scannerViewMode') || 'simple'
@@ -128,13 +134,13 @@ function ScannerTable({ results, onRefresh, lastUpdated, onOverrideToggle, onEnt
 
   return (
     <div>
-      <div style={{ marginBottom: '1rem', display: 'flex', gap: '1rem', alignItems: 'center', justifyContent: 'space-between' }}>
-        <div style={{ display: 'flex', gap: '1rem', alignItems: 'center' }}>
-          <h2>Scanner Results</h2>
+      <div style={{ marginBottom: '0.5rem', display: 'flex', gap: '0.75rem', alignItems: 'center', justifyContent: 'space-between' }}>
+        <div style={{ display: 'flex', gap: '0.75rem', alignItems: 'center' }}>
+          <h2 style={{ fontSize: '1rem', margin: 0 }}>Scanner Results</h2>
           <select
             value={filter}
             onChange={(e) => setFilter(e.target.value)}
-            style={{ padding: '0.5rem', background: '#111827', border: '1px solid #374151', borderRadius: '0.25rem', color: '#fff' }}
+            style={{ padding: '0.3rem 0.5rem', fontSize: '0.82rem', background: '#111827', border: '1px solid #374151', borderRadius: '0.25rem', color: '#fff' }}
           >
             <option value="all">All Tickers</option>
             <option value="qualified">Qualified Only</option>
@@ -144,7 +150,7 @@ function ScannerTable({ results, onRefresh, lastUpdated, onOverrideToggle, onEnt
           <select
             value={viewMode}
             onChange={(e) => { setViewMode(e.target.value); localStorage.setItem('scannerViewMode', e.target.value); }}
-            style={{ padding: '0.5rem', background: '#111827', border: '1px solid #374151', borderRadius: '0.25rem', color: '#fff' }}
+            style={{ padding: '0.3rem 0.5rem', fontSize: '0.82rem', background: '#111827', border: '1px solid #374151', borderRadius: '0.25rem', color: '#fff' }}
           >
             <option value="simple">Simple View (✅/❌)</option>
             <option value="detailed">Detailed View (Numbers)</option>
@@ -156,45 +162,63 @@ function ScannerTable({ results, onRefresh, lastUpdated, onOverrideToggle, onEnt
         </div>
         {/* ── Scan status / market status ── */}
         {(() => {
-          const mkt = getMarketStatus();
+          const mkt     = getMarketStatus();
           const secsAgo = lastUpdated ? Math.floor((new Date() - lastUpdated) / 1000) : null;
+          const lastScanStr = lastUpdated
+            ? lastUpdated.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
+            : null;
+          const agoStr = secsAgo == null ? null
+            : secsAgo < 60    ? `${secsAgo}s ago`
+            : secsAgo < 3600  ? `${Math.floor(secsAgo / 60)}m ago`
+            : `${Math.floor(secsAgo / 3600)}h ago`;
 
-          if (mkt.open) {
-            // Market is open — show last scan time + elapsed
+          // ── State 1: Scanner manually stopped ──────────────────────────
+          if (!scannerRunning) {
             return (
               <div style={{ fontSize: '13px', fontWeight: '500', textAlign: 'right', lineHeight: '1.5' }}>
-                <span style={{ color: '#10b981' }}>
-                  🟢 Market Open
-                </span>
-                {lastUpdated && (
-                  <span style={{ color: '#6b7280', marginLeft: '0.75rem' }}>
-                    Last scan: {lastUpdated.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' })}
-                    {' '}({secsAgo < 60 ? `${secsAgo}s ago` : `${Math.floor(secsAgo / 60)}m ${secsAgo % 60}s ago`})
-                  </span>
-                )}
-              </div>
-            );
-          } else {
-            // Market is closed — show status + next open + last scan date
-            const statusColor = mkt.label === 'pre-market' ? '#f59e0b' : '#6b7280';
-            const statusIcon  = mkt.label === 'weekend' ? '📅' : mkt.label === 'pre-market' ? '🌅' : '🌙';
-            return (
-              <div style={{ fontSize: '13px', fontWeight: '500', textAlign: 'right', lineHeight: '1.5' }}>
-                <span style={{ color: statusColor }}>
-                  {statusIcon} Market {mkt.label === 'weekend' ? 'Closed (Weekend)' : mkt.label === 'pre-market' ? 'Pre-Market' : 'After Hours'}
-                  {mkt.nextOpen && (
-                    <span style={{ color: '#6b7280', fontWeight: '400' }}> — opens {mkt.nextOpen} ET</span>
-                  )}
-                </span>
-                {lastUpdated && (
+                <span style={{ color: '#6b7280' }}>⏹ Scanner Stopped</span>
+                {lastScanStr && (
                   <span style={{ color: '#4b5563', marginLeft: '0.75rem' }}>
-                    Last scan: {lastUpdated.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' })}
-                    {' '}({secsAgo < 3600 ? `${Math.floor(secsAgo / 60)}m ago` : `${Math.floor(secsAgo / 3600)}h ago`})
+                    · Last scan: {lastScanStr} ({agoStr})
                   </span>
                 )}
               </div>
             );
           }
+
+          // ── State 2: Scanner running, market open ───────────────────────
+          if (mkt.open) {
+            return (
+              <div style={{ fontSize: '13px', fontWeight: '500', textAlign: 'right', lineHeight: '1.5' }}>
+                <span style={{ color: '#10b981' }}>🟢 Market Open — Scanner Active</span>
+                {lastScanStr && (
+                  <span style={{ color: '#6b7280', marginLeft: '0.75rem' }}>
+                    · Last scan: {lastUpdated.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' })} ({agoStr})
+                  </span>
+                )}
+              </div>
+            );
+          }
+
+          // ── State 3: Scanner running, market closed (sleeping) ──────────
+          const statusColor = mkt.label === 'pre-market' ? '#f59e0b' : '#6b7280';
+          const statusIcon  = mkt.label === 'weekend' ? '📅' : mkt.label === 'pre-market' ? '🌅' : '🌙';
+          const marketLabel = mkt.label === 'weekend' ? 'Closed (Weekend)' : mkt.label === 'pre-market' ? 'Pre-Market' : 'After Hours';
+          return (
+            <div style={{ fontSize: '13px', fontWeight: '500', textAlign: 'right', lineHeight: '1.5' }}>
+              <span style={{ color: statusColor }}>
+                {statusIcon} {marketLabel} — Scanner sleeping
+                {mkt.nextOpen && (
+                  <span style={{ color: '#6b7280', fontWeight: '400' }}>, resumes {mkt.nextOpen} ET</span>
+                )}
+              </span>
+              {lastScanStr && (
+                <span style={{ color: '#4b5563', marginLeft: '0.75rem' }}>
+                  · Last scan: {lastScanStr} ({agoStr})
+                </span>
+              )}
+            </div>
+          );
         })()}
       </div>
 
@@ -202,15 +226,15 @@ function ScannerTable({ results, onRefresh, lastUpdated, onOverrideToggle, onEnt
         <thead>
           <tr>
             <Th col="symbol">Symbol</Th>
-            <Th col="price">Price</Th>
-            <Th col="week_52_high">52W High</Th>
-            <th>Within 5%</th>
-            <th>&gt;50MA</th>
-            <th>50&gt;150</th>
-            <th>150&gt;200</th>
-            <th>200↑</th>
-            <th>&gt;30% Low</th>
-            <Th col="volume">Volume</Th>
+            <Th col="price" style={R}>Price</Th>
+            <Th col="week_52_high" style={R}>52W High</Th>
+            <th style={R}>Within 5%</th>
+            <th style={R}>&gt;50MA</th>
+            <th style={R}>50&gt;150</th>
+            <th style={R}>150&gt;200</th>
+            <th style={R}>200↑</th>
+            <th style={R}>&gt;30% Low</th>
+            <Th col="volume" style={R}>Volume</Th>
             <th>SPY OK</th>
             <th>Qualified</th>
             <th>Action</th>
@@ -241,86 +265,86 @@ function ScannerTable({ results, onRefresh, lastUpdated, onOverrideToggle, onEnt
                     }}>✅ In Portfolio</span>
                   )}
                 </td>
-                <td>${r.price?.toFixed(2) || '--'}</td>
-                <td>${r.week_52_high?.toFixed(2) || '--'}</td>
+                <td style={R}>{fmt$(r.price)}</td>
+                <td style={R}>{fmt$(r.week_52_high)}</td>
 
                 {/* Criteria 1: Within 5% of 52W High */}
-                <td className={r.criteria_1 ? 'criteria-pass' : 'criteria-fail'}>
+                <td className={r.criteria_1 ? 'criteria-pass' : 'criteria-fail'} style={R}>
                   {viewMode === 'simple' ? (
                     r.criteria_1 ? '✅' : '❌'
                   ) : (
                     <span style={{ color: r.criteria_1 ? '#10b981' : '#ef4444' }}>
                       {r.week_52_high && r.price
-                        ? (((r.week_52_high - r.price) / r.week_52_high * 100).toFixed(1) + '%')
+                        ? fmtPct((r.week_52_high - r.price) / r.week_52_high * 100)
                         : '--'}
                     </span>
                   )}
                 </td>
 
                 {/* Criteria 2: Price > 50MA */}
-                <td className={r.criteria_2 ? 'criteria-pass' : 'criteria-fail'}>
+                <td className={r.criteria_2 ? 'criteria-pass' : 'criteria-fail'} style={R}>
                   {viewMode === 'simple' ? (
                     r.criteria_2 ? '✅' : '❌'
                   ) : (
                     <span style={{ color: r.criteria_2 ? '#10b981' : '#ef4444' }}>
-                      ${r.ma_50?.toFixed(2) || '--'}
+                      {fmt$(r.ma_50)}
                     </span>
                   )}
                 </td>
 
                 {/* Criteria 3: 50MA > 150MA */}
-                <td className={r.criteria_3 ? 'criteria-pass' : 'criteria-fail'}>
+                <td className={r.criteria_3 ? 'criteria-pass' : 'criteria-fail'} style={R}>
                   {viewMode === 'simple' ? (
                     r.criteria_3 ? '✅' : '❌'
                   ) : (
                     <span style={{ color: r.criteria_3 ? '#10b981' : '#ef4444' }}>
-                      ${r.ma_150?.toFixed(2) || '--'}
+                      {fmt$(r.ma_150)}
                     </span>
                   )}
                 </td>
 
                 {/* Criteria 4: 150MA > 200MA */}
-                <td className={r.criteria_4 ? 'criteria-pass' : 'criteria-fail'}>
+                <td className={r.criteria_4 ? 'criteria-pass' : 'criteria-fail'} style={R}>
                   {viewMode === 'simple' ? (
                     r.criteria_4 ? '✅' : '❌'
                   ) : (
                     <span style={{ color: r.criteria_4 ? '#10b981' : '#ef4444' }}>
-                      ${r.ma_200?.toFixed(2) || '--'}
+                      {fmt$(r.ma_200)}
                     </span>
                   )}
                 </td>
 
                 {/* Criteria 5: 200MA Trending Up */}
-                <td className={r.criteria_5 ? 'criteria-pass' : 'criteria-fail'}>
+                <td className={r.criteria_5 ? 'criteria-pass' : 'criteria-fail'} style={R}>
                   {viewMode === 'simple' ? (
                     r.criteria_5 ? '✅' : '❌'
                   ) : (
                     <span style={{ color: r.criteria_5 ? '#10b981' : '#ef4444' }}>
-                      ${r.ma_200_1m_ago?.toFixed(2) || '--'}
+                      {fmt$(r.ma_200_1m_ago)}
                     </span>
                   )}
                 </td>
 
                 {/* Criteria 6: >30% above 52W Low */}
-                <td className={r.criteria_6 ? 'criteria-pass' : 'criteria-fail'}>
+                <td className={r.criteria_6 ? 'criteria-pass' : 'criteria-fail'} style={R}>
                   {viewMode === 'simple' ? (
                     r.criteria_6 ? '✅' : '❌'
                   ) : (
                     <span style={{ color: r.criteria_6 ? '#10b981' : '#ef4444' }}>
                       {r.week_52_low && r.price
-                        ? (((r.price - r.week_52_low) / r.week_52_low * 100).toFixed(1) + '%')
+                        ? fmtPct((r.price - r.week_52_low) / r.week_52_low * 100)
                         : '--'}
                     </span>
                   )}
                 </td>
 
                 {/* Criteria 7: Volume > Avg */}
-                <td className={r.criteria_7 ? 'criteria-pass' : 'criteria-fail'}>
+                <td className={r.criteria_7 ? 'criteria-pass' : 'criteria-fail'} style={R}>
                   {viewMode === 'simple' ? (
                     r.criteria_7 ? '✅' : '❌'
                   ) : (
                     <span style={{ color: r.criteria_7 ? '#10b981' : '#ef4444' }}>
-                      {r.avg_volume_50 ? (r.avg_volume_50 / 1000).toFixed(0) + 'K' : '--'}
+                      {fmtVol(r.avg_volume_50)}
                     </span>
                   )}
                 </td>
@@ -367,9 +391,9 @@ function ScannerTable({ results, onRefresh, lastUpdated, onOverrideToggle, onEnt
                         cursor: 'pointer'
                       }}
                     >
-                      <option value="prev_close">Prev Close (${r.price?.toFixed(2)})</option>
+                      <option value="prev_close">Prev Close ({fmt$(r.price)})</option>
                       <option value="market_open">Market Open (requires IB real-time data)</option>
-                      <option value="limit_1pct">Limit +1% (${(r.price * 1.01)?.toFixed(2)})</option>
+                      <option value="limit_1pct">Limit +1% ({fmt$(r.price * 1.01)})</option>
                     </select>
                   )}
                 </td>

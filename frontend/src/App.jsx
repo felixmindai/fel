@@ -406,6 +406,7 @@ function App() {
             onEntryMethodChange={handleEntryMethodChange}
             defaultEntryMethod={config?.default_entry_method || 'prev_close'}
             openPositionSymbols={openPositionSymbols}
+            scannerRunning={status?.scanner_running ?? false}
           />
         )}
         {activeTab === 'portfolio' && (

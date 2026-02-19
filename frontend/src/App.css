@@ -7,7 +7,7 @@
 
 .app-header {
   background: #1a1f2e;
-  padding: 1rem 2rem;
+  padding: 0.6rem 2rem;
   display: flex;
   justify-content: space-between;
   align-items: center;
@@ -133,12 +133,12 @@
 }
 
 .tab-nav button {
-  padding: 1rem 1.5rem;
+  padding: 0.55rem 1.25rem;
   background: none;
   border: none;
   color: #9ca3af;
   cursor: pointer;
-  font-size: 1rem;
+  font-size: 0.9rem;
   border-bottom: 2px solid transparent;
   transition: all 0.2s;
 }
@@ -155,7 +155,7 @@
 
 .app-content {
   flex: 1;
-  padding: 2rem;
+  padding: 1.25rem 2rem 1rem;
   overflow-x: auto;
 }
 
@@ -177,18 +177,19 @@ table {
 
 th {
   background: #111827;
-  padding: 0.75rem;
+  padding: 0.45rem 0.65rem;
   text-align: left;
   font-weight: 600;
   color: #9ca3af;
-  font-size: 0.875rem;
+  font-size: 0.78rem;
   text-transform: uppercase;
   border-bottom: 2px solid #374151;
 }
 
 td {
-  padding: 0.75rem;
+  padding: 0.4rem 0.65rem;
   border-bottom: 1px solid #374151;
+  font-size: 0.85rem;
 }
 
 tr:hover {
@@ -226,35 +227,35 @@ tr:hover {
 
 .summary-cards {
   display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
-  gap: 1rem;
-  margin-bottom: 2rem;
+  grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));
+  gap: 0.6rem;
+  margin-bottom: 1rem;
 }
 
 .summary-card {
   background: #1a1f2e;
-  padding: 1.5rem;
+  padding: 0.65rem 1rem;
   border-radius: 0.5rem;
   border: 1px solid #374151;
 }
 
 .summary-card h3 {
-  font-size: 0.875rem;
+  font-size: 0.7rem;
   color: #9ca3af;
-  margin-bottom: 0.5rem;
+  margin-bottom: 0.2rem;
   text-transform: uppercase;
 }
 
 .summary-card .value {
-  font-size: 2rem;
+  font-size: 1.4rem;
   font-weight: bold;
   color: #fff;
 }
 
 .summary-card .subtext {
-  font-size: 0.875rem;
+  font-size: 0.75rem;
   color: #6b7280;
-  margin-top: 0.25rem;
+  margin-top: 0.1rem;
 }
 
 .form-group {
