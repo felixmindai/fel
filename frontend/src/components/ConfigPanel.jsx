@@ -152,7 +152,6 @@ function ConfigPanel({ config, onUpdate, status, dataUpdateStatus, onUpdateDataN
       if (data.success) {
         alert('✅ Configuration updated!');
         onUpdate();
-        setTimeout(() => { window.location.reload(); }, 500);
       }
     } catch (error) {
       alert('❌ Error updating configuration: ' + error.message);
