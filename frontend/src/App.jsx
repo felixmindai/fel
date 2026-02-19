@@ -339,12 +339,26 @@ function App() {
               : <StatusDot color="red"   label="IB" value="Disconnected" />
           )}
 
-          {/* Scanner */}
+          {/* Scanner — 4 states:
+               WS down        → red    Connecting…
+               Stopped        → red    Stopped
+               Running+closed → amber  Sleeping
+               Running+open   → green  Running                */}
           {!wsConnected
-            ? <StatusDot color="red"   label="Scanner" value="Connecting…" />
-            : status?.scanner_running
-              ? <StatusDot color="green" label="Scanner" value="Running" />
-              : <StatusDot color="grey"  label="Scanner" value="Stopped" />
+            ? <StatusDot color="red" label="Scanner" value="Connecting…" />
+            : (() => {
+                if (!status?.scanner_running)
+                  return <StatusDot color="red"   label="Scanner" value="Stopped" />;
+                // Check if market is currently open (ET, Mon-Fri 09:30-16:00)
+                const now = new Date();
+                const et  = new Date(now.toLocaleString('en-US', { timeZone: 'America/New_York' }));
+                const day = et.getDay();
+                const mins = et.getHours() * 60 + et.getMinutes();
+                const marketOpen = day >= 1 && day <= 5 && mins >= 570 && mins < 960; // 9:30–16:00
+                return marketOpen
+                  ? <StatusDot color="green" label="Scanner" value="Running" />
+                  : <StatusDot color="amber" label="Scanner" value="Sleeping" />;
+              })()
           }
 
           {/* Execute — only shown once WS is connected */}
