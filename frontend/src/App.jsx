@@ -454,7 +454,7 @@ function App() {
           className={activeTab === 'portfolio' ? 'active' : ''}
           onClick={() => setActiveTab('portfolio')}
         >
-          💼 Portfolio ({positions.length > 0 ? positions.length : (status?.open_positions || 0)})
+          💼 Portfolio ({positions.length})
         </button>
         <button
           className={activeTab === 'tickers' ? 'active' : ''}
