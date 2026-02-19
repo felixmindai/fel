@@ -666,54 +666,89 @@ async def create_position(position: PositionCreate):
     return {"success": True, "position": pos}
 
 @app.delete("/api/positions/{symbol}")
-async def close_position(symbol: str, exit_price: Optional[float] = None):
-    """Close a position."""
+async def close_position(symbol: str):
+    """Close a position by placing a real market SELL order in IB, then closing in DB."""
     positions = bot_state.db.get_positions()
     position = next((p for p in positions if p['symbol'] == symbol), None)
-    
+
     if not position:
         raise HTTPException(status_code=404, detail="Position not found")
-    
-    # Get exit price — prefer caller-supplied price (avoids a blocking IB fetch).
-    # If not supplied, fetch from IB with a timeout. Never fall back to stale
-    # DB prices — using a wrong price could silently misrecord P&L.
-    if not exit_price:
-        try:
-            loop = asyncio.get_running_loop()
-            exit_price = await asyncio.wait_for(
-                loop.run_in_executor(None, bot_state.fetcher.fetch_current_price, symbol),
-                timeout=10.0
-            )
-        except asyncio.TimeoutError:
-            raise HTTPException(status_code=503, detail=f"IB price fetch timed out for {symbol} — please retry")
-        except Exception as e:
-            raise HTTPException(status_code=503, detail=f"Could not fetch live price for {symbol}: {e}")
-    if not exit_price:
+
+    # ── Guard: IB must be connected ──────────────────────────────────────────
+    if not bot_state.fetcher.connected:
+        raise HTTPException(status_code=503, detail="IB not connected — cannot place sell order")
+
+    # ── Fetch a live price first (used as fallback if fill confirmation times out) ──
+    try:
+        loop = asyncio.get_running_loop()
+        resolved_price = await asyncio.wait_for(
+            loop.run_in_executor(None, bot_state.fetcher.fetch_current_price, symbol),
+            timeout=10.0
+        )
+    except asyncio.TimeoutError:
+        raise HTTPException(status_code=503, detail=f"IB price fetch timed out for {symbol} — please retry")
+    except Exception as e:
+        raise HTTPException(status_code=503, detail=f"Could not fetch live price for {symbol}: {e}")
+    if not resolved_price:
         raise HTTPException(status_code=503, detail=f"IB returned no price for {symbol} — please retry")
-    
-    # Calculate P&L — cast Decimal DB fields to float to avoid TypeError
-    cost_basis = float(position['cost_basis'])
-    proceeds   = exit_price * float(position['quantity'])
-    pnl        = proceeds - cost_basis
-    pnl_pct    = (pnl / cost_basis) * 100
-    
-    # Close trade
+
+    # ── Place market SELL order via IB ───────────────────────────────────────
+    # place_market_order internally waits up to 60s for fill confirmation.
+    # Paper vs live is determined by IB_PORT in .env — same call for both.
+    quantity = int(position['quantity'])
+    try:
+        ib_order = await asyncio.wait_for(
+            loop.run_in_executor(
+                None,
+                lambda s=symbol, q=quantity: bot_state.fetcher.place_market_order(s, q, "SELL")
+            ),
+            timeout=90.0  # 60s fill timeout + 30s headroom
+        )
+    except asyncio.TimeoutError:
+        raise HTTPException(status_code=503, detail=f"IB sell order timed out for {symbol} — check IB terminal")
+
+    if ib_order is None:
+        raise HTTPException(status_code=503, detail=f"IB sell order failed for {symbol} — position NOT closed, please retry")
+
+    # ── Use confirmed fill price; fall back to resolved price ────────────────
+    raw_fill = ib_order.get("avg_fill_price") or 0.0
+    filled_exit_price = float(raw_fill) if (raw_fill and raw_fill > 0) else resolved_price
+    if not filled_exit_price or filled_exit_price <= 0:
+        filled_exit_price = resolved_price  # last resort
+
+    # ── Calculate P&L with actual fill price ─────────────────────────────────
+    cost_basis      = float(position['cost_basis'])
+    actual_proceeds = round(filled_exit_price * quantity, 2)
+    actual_pnl      = round(actual_proceeds - cost_basis, 2)
+    actual_pnl_pct  = round((actual_pnl / cost_basis) * 100, 4) if cost_basis else 0
+
+    # ── Close in DB ───────────────────────────────────────────────────────────
     bot_state.db.close_trade(
         position['trade_id'],
         datetime.now(ET).date(),
-        exit_price,
-        proceeds,
-        pnl,
-        pnl_pct,
+        filled_exit_price,
+        actual_proceeds,
+        actual_pnl,
+        actual_pnl_pct,
         'MANUAL_CLOSE'
     )
-    
-    # Close position
     bot_state.db.close_position(symbol)
 
-    logger.info(f"✅ Closed position: {symbol} | P&L: ${pnl:.2f} ({pnl_pct:.2f}%)")
+    # ── Clear in_portfolio flag so Scanner tab badge updates immediately ──────
+    bot_state.db.update_scan_result_portfolio_flag(symbol, False)
 
-    # Broadcast to all WS clients so every open browser tab refreshes immediately
+    # ── Determine mode (PAPER / LIVE) for logging and response ───────────────
+    config = bot_state.db.get_config()
+    paper_trading = bool(config.get('paper_trading', True))
+    mode = "PAPER" if paper_trading else "LIVE"
+
+    logger.info(
+        f"✅ [{mode}] Manual SELL {symbol}: {quantity} shares @ ${filled_exit_price:.2f} "
+        f"| P&L: ${actual_pnl:.2f} ({actual_pnl_pct:.2f}%) "
+        f"| ib_order_id={ib_order.get('order_id')} status={ib_order.get('status')}"
+    )
+
+    # ── Broadcast to all WS clients ───────────────────────────────────────────
     await broadcast_message({
         'type': 'orders_executed',
         'timestamp': datetime.now().isoformat(),
@@ -725,9 +760,12 @@ async def close_position(symbol: str, exit_price: Optional[float] = None):
 
     return {
         "success": True,
-        "exit_price": exit_price,
-        "pnl": pnl,
-        "pnl_pct": pnl_pct
+        "exit_price": filled_exit_price,
+        "pnl": actual_pnl,
+        "pnl_pct": actual_pnl_pct,
+        "ib_order_id": ib_order.get("order_id"),
+        "ib_status": ib_order.get("status"),
+        "mode": mode
     }
 
 # ============================================================================

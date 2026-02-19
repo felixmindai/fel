@@ -89,16 +89,11 @@ function PortfolioPanel({ positions, config, onRefresh, onStatusRefresh }) {
     );
   }
 
-  const handleClosePosition = async (symbol, currentPrice) => {
-    if (!confirm(`Close position in ${symbol}?`)) return;
+  const handleClosePosition = async (symbol, quantity) => {
+    if (!confirm(`Place SELL order for ${symbol} in IB?\n\nThis will sell ${quantity} shares at market price.`)) return;
 
     try {
-      // Pass the current price we already have so the backend doesn't need
-      // to make a separate IB fetch that can hang or fail
-      const url = currentPrice
-        ? `${API_BASE}/positions/${symbol}?exit_price=${currentPrice}`
-        : `${API_BASE}/positions/${symbol}`;
-      const response = await fetch(url, { method: 'DELETE' });
+      const response = await fetch(`${API_BASE}/positions/${symbol}`, { method: 'DELETE' });
       const data = await response.json();
 
       if (!response.ok) {
@@ -106,7 +101,13 @@ function PortfolioPanel({ positions, config, onRefresh, onStatusRefresh }) {
         return;
       }
       if (data.success) {
-        alert(`✅ Position closed: ${symbol}\nP&L: $${data.pnl.toFixed(2)} (${data.pnl_pct.toFixed(2)}%)`);
+        const modeLabel = data.mode === 'LIVE' ? '🔴 LIVE' : '📄 PAPER';
+        alert(
+          `✅ [${modeLabel}] Sell order filled: ${symbol}\n` +
+          `Fill Price: $${data.exit_price.toFixed(2)}\n` +
+          `P&L: $${data.pnl.toFixed(2)} (${data.pnl_pct.toFixed(2)}%)\n` +
+          `IB Order ID: ${data.ib_order_id || 'N/A'} | Status: ${data.ib_status || 'N/A'}`
+        );
         onRefresh();         // re-fetch positions list → removes row from table
         onStatusRefresh?.(); // re-fetch status → updates summary cards + tab count
       }
@@ -209,7 +210,7 @@ function PortfolioPanel({ positions, config, onRefresh, onStatusRefresh }) {
                   <button
                     className="btn btn-danger"
                     style={{ padding: '0.25rem 0.75rem', fontSize: '0.8rem' }}
-                    onClick={() => handleClosePosition(pos.symbol, pos.current_price)}
+                    onClick={() => handleClosePosition(pos.symbol, pos.quantity)}
                   >
                     Close
                   </button>
