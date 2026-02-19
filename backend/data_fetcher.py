@@ -22,6 +22,13 @@ load_dotenv()
 
 logger = logging.getLogger(__name__)
 
+# Suppress noisy ib_insync internal loggers:
+#   Warning 10167 = "market data not subscribed, displaying delayed data"
+#   These fire once per contract on every reqMktData call and fill the terminal
+#   with nothing actionable — we're intentionally using delayed data.
+logging.getLogger('ib_insync.wrapper').setLevel(logging.ERROR)
+logging.getLogger('ib_insync.client').setLevel(logging.ERROR)
+
 
 class DataFetcher:
     """Fetches historical and real-time data from Interactive Brokers."""
