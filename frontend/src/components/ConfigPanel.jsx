@@ -274,11 +274,11 @@ function ConfigPanel({ config, onUpdate, status, dataUpdateStatus, onUpdateDataN
 
               <div className="form-group">
                 <label>Scanner Interval (seconds)</label>
-                <input type="number" step="10" min="10" max="300"
+                <input type="number" step="5" min="5" max="300"
                   value={formData.scanner_interval_seconds}
                   onChange={(e) => set('scanner_interval_seconds', parseInt(e.target.value))} />
                 <small style={HINT}>
-                  How often the live scanner re-evaluates all tickers while running (default: 30s).
+                  How often the live scanner re-evaluates all tickers while running (default: 30s, min: 5s).
                   Takes effect on the next scan cycle.
                 </small>
               </div>
