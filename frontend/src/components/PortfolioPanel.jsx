@@ -89,13 +89,22 @@ function PortfolioPanel({ positions, config, onRefresh }) {
     );
   }
 
-  const handleClosePosition = async (symbol) => {
+  const handleClosePosition = async (symbol, currentPrice) => {
     if (!confirm(`Close position in ${symbol}?`)) return;
 
     try {
-      const response = await fetch(`${API_BASE}/positions/${symbol}`, { method: 'DELETE' });
+      // Pass the current price we already have so the backend doesn't need
+      // to make a separate IB fetch that can hang or fail
+      const url = currentPrice
+        ? `${API_BASE}/positions/${symbol}?exit_price=${currentPrice}`
+        : `${API_BASE}/positions/${symbol}`;
+      const response = await fetch(url, { method: 'DELETE' });
       const data = await response.json();
 
+      if (!response.ok) {
+        alert(`❌ Failed to close ${symbol}: ${data.detail || response.statusText}`);
+        return;
+      }
       if (data.success) {
         alert(`✅ Position closed: ${symbol}\nP&L: $${data.pnl.toFixed(2)} (${data.pnl_pct.toFixed(2)}%)`);
         onRefresh();
@@ -199,7 +208,7 @@ function PortfolioPanel({ positions, config, onRefresh }) {
                   <button
                     className="btn btn-danger"
                     style={{ padding: '0.25rem 0.75rem', fontSize: '0.8rem' }}
-                    onClick={() => handleClosePosition(pos.symbol)}
+                    onClick={() => handleClosePosition(pos.symbol, pos.current_price)}
                   >
                     Close
                   </button>
