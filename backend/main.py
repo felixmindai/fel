@@ -613,43 +613,10 @@ async def remove_ticker(symbol: str):
 
 @app.get("/api/positions")
 async def get_positions():
-    """Get all open positions with current prices fetched in a single batch call."""
-    import math
+    """Get all open positions. Prices come from the last scanner cycle (stored in DB)
+    so this endpoint returns instantly without making a live IB request."""
     positions = bot_state.db.get_positions()
-
-    if positions and bot_state.fetcher.connected:
-        # Batch-fetch all prices in one round-trip (much faster than one-by-one)
-        symbols = [pos['symbol'] for pos in positions]
-        try:
-            loop = asyncio.get_running_loop()
-            live_prices = await asyncio.wait_for(
-                loop.run_in_executor(
-                    None,
-                    lambda: bot_state.fetcher.fetch_multiple_prices(symbols)
-                ),
-                timeout=10.0
-            )
-        except asyncio.TimeoutError:
-            logger.warning("⏱ Position price fetch timed out — returning positions without live prices")
-            live_prices = {}
-        except Exception as e:
-            logger.warning(f"Batch price fetch failed for positions: {e}")
-            live_prices = {}
-
-        for pos in positions:
-            raw = live_prices.get(pos['symbol'])
-            if raw:
-                raw = float(raw)
-                if math.isnan(raw) or math.isinf(raw) or raw <= 0:
-                    raw = None
-            current_price = raw
-            if current_price:
-                cost_basis = float(pos['cost_basis'])
-                pos['current_price'] = current_price
-                pos['current_value'] = current_price * float(pos['quantity'])
-                pos['pnl'] = pos['current_value'] - cost_basis
-                pos['pnl_pct'] = (pos['pnl'] / cost_basis) * 100 if cost_basis else 0
-
+    logger.info(f"📋 GET /positions — returning {len(positions)} open positions from DB")
     # Convert Decimals to floats
     return convert_decimals({"positions": positions, "count": len(positions)})
 
