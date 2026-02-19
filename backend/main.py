@@ -689,7 +689,8 @@ async def close_position(symbol: str, exit_price: Optional[float] = None):
         raise HTTPException(status_code=404, detail="Position not found")
     
     # Get exit price — prefer caller-supplied price (avoids a blocking IB fetch).
-    # Fall back to IB fetch, then to last DB closing price as a last resort.
+    # If not supplied, fetch from IB with a timeout. Never fall back to stale
+    # DB prices — using a wrong price could silently misrecord P&L.
     if not exit_price:
         try:
             loop = asyncio.get_running_loop()
@@ -697,13 +698,12 @@ async def close_position(symbol: str, exit_price: Optional[float] = None):
                 loop.run_in_executor(None, bot_state.fetcher.fetch_current_price, symbol),
                 timeout=10.0
             )
-        except Exception:
-            exit_price = None
+        except asyncio.TimeoutError:
+            raise HTTPException(status_code=503, detail=f"IB price fetch timed out for {symbol} — please retry")
+        except Exception as e:
+            raise HTTPException(status_code=503, detail=f"Could not fetch live price for {symbol}: {e}")
     if not exit_price:
-        # Last resort: use the entry price from the DB record so the close still goes through
-        bars = bot_state.db.get_daily_bars(symbol, limit=1)
-        exit_price = float(bars[0]['close']) if bars else float(position['entry_price'])
-        logger.warning(f"⚠️ Could not fetch live price for {symbol} — closing at {exit_price:.2f} (last known)")
+        raise HTTPException(status_code=503, detail=f"IB returned no price for {symbol} — please retry")
     
     # Calculate P&L
     proceeds = exit_price * position['quantity']
