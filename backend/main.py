@@ -621,11 +621,17 @@ async def get_positions():
         # Batch-fetch all prices in one round-trip (much faster than one-by-one)
         symbols = [pos['symbol'] for pos in positions]
         try:
-            loop = asyncio.get_event_loop()
-            live_prices = await loop.run_in_executor(
-                None,
-                lambda: bot_state.fetcher.fetch_multiple_prices(symbols)
+            loop = asyncio.get_running_loop()
+            live_prices = await asyncio.wait_for(
+                loop.run_in_executor(
+                    None,
+                    lambda: bot_state.fetcher.fetch_multiple_prices(symbols)
+                ),
+                timeout=10.0
             )
+        except asyncio.TimeoutError:
+            logger.warning("⏱ Position price fetch timed out — returning positions without live prices")
+            live_prices = {}
         except Exception as e:
             logger.warning(f"Batch price fetch failed for positions: {e}")
             live_prices = {}
