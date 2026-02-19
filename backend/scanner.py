@@ -14,7 +14,7 @@ Scans stocks for breakout opportunities using Mark Minervini's criteria:
 8. SPY above its 50-day MA (market health)
 """
 
-from datetime import date, datetime
+from datetime import date, datetime, time as dtime
 from typing import List, Dict, Optional
 from zoneinfo import ZoneInfo
 import logging
@@ -34,20 +34,24 @@ class MinerviniScanner:
         self.fetcher = fetcher
         self.spy_qualified = False  # Criterion #8 - market health
     
-    def calculate_criteria(self, symbol: str, bars: List[Dict], 
-                          current_price: float, current_volume: int) -> Dict:
+    def calculate_criteria(self, symbol: str, bars: List[Dict],
+                          current_price: float, current_volume: int,
+                          config: Dict = None) -> Dict:
         """
         Evaluate all 8 criteria for a symbol.
-        
+
         Args:
             symbol: Stock ticker
             bars: Historical daily bars (most recent last)
             current_price: Current/latest price
             current_volume: Current/latest volume
-            
+            config: Bot config dict (fetched from DB if not provided)
+
         Returns:
             Dictionary with all criteria results and qualification status
         """
+        if config is None:
+            config = self.db.get_config()
         if len(bars) < 250:
             logger.warning(f"⚠️ {symbol}: Insufficient data ({len(bars)} bars, need 250)")
             return self._failed_result(symbol, "Insufficient data")
@@ -81,32 +85,38 @@ class MinerviniScanner:
             return self._failed_result(symbol, "Could not calculate MAs")
         
         # ========== EVALUATE 8 CRITERIA ==========
-        
-        # 1. Price within 5% of 52-week high
-        criteria_1 = current_price >= (week_52_high * 0.95)
-        
+
+        # Read configurable thresholds from DB config
+        near_52wh_pct  = float(config.get('near_52wh_pct',  5.0))
+        above_52wl_pct = float(config.get('above_52wl_pct', 30.0))
+        volume_mult    = float(config.get('volume_multiplier', 1.5))
+
+        # 1. Price within near_52wh_pct% of 52-week high
+        criteria_1 = current_price >= (week_52_high * (1 - near_52wh_pct / 100))
+
         # 2. Price above 50-day MA
         criteria_2 = current_price > ma_50
-        
+
         # 3. 50-day MA above 150-day MA
         criteria_3 = ma_50 > ma_150
-        
+
         # 4. 150-day MA above 200-day MA
         criteria_4 = ma_150 > ma_200
-        
+
         # 5. 200-day MA trending up (current > 1 month ago)
         criteria_5 = ma_200 > ma_200_1m_ago
-        
-        # 6. Price at least 30% above 52-week low
-        criteria_6 = current_price >= (week_52_low * 1.30)
-        
-        # 7. Breakout on above-average volume (1.5x)
-        criteria_7 = current_volume >= (avg_volume_50 * 1.5) if avg_volume_50 > 0 else False
+
+        # 6. Price at least above_52wl_pct% above 52-week low
+        criteria_6 = current_price >= (week_52_low * (1 + above_52wl_pct / 100))
+
+        # 7. Breakout on above-average volume (volume_mult x avg)
+        criteria_7 = current_volume >= (avg_volume_50 * volume_mult) if avg_volume_50 > 0 else False
 
         # 8. SPY above its 50-day MA (checked separately)
         criteria_8 = self.spy_qualified
         
-        # ALL 8 must be True
+        # All 8 criteria must be met (criteria 6/7 thresholds are configurable in Settings UI;
+        # criteria 8 can be toggled on/off via SPY Market Health Filter setting)
         all_criteria_met = all([
             criteria_1, criteria_2, criteria_3, criteria_4,
             criteria_5, criteria_6, criteria_7, criteria_8
@@ -195,69 +205,102 @@ class MinerviniScanner:
             self.spy_qualified = False
             return False
     
+    @staticmethod
+    def _market_is_open() -> bool:
+        """
+        Returns True only during regular US market hours (Mon-Fri 09:30-16:00 ET).
+        Used to decide whether a live IB price fetch is worthwhile.
+        Outside these hours IB returns stale/delayed snapshots that add 3-30s
+        of latency for zero benefit — DB closing prices are equally good.
+        """
+        now = datetime.now(ET)
+        if now.weekday() >= 5:          # Saturday=5, Sunday=6
+            return False
+        t = now.time()
+        return dtime(9, 30) <= t < dtime(16, 0)
+
     def scan_all_tickers(self) -> List[Dict]:
         """
         Scan all active tickers and return results.
 
-        Price source priority:
-          1. IB live price (fetched in a single batch call before the loop)
-          2. Latest closing price from the database (fallback if IB unavailable)
+        Optimisations vs original:
+          1. All historical bars fetched in ONE SQL query (batch) instead of
+             one query per ticker — eliminates N-1 DB round-trips.
+          2. IB live price fetch is skipped outside market hours (weekends,
+             evenings) — IB is slow / returns stale data off-hours anyway
+             and DB closing prices are equally valid for criteria evaluation.
 
-        Historical bars (used for MA / 52-week calculations) always come from
-        the database — fetching 250+ bars per ticker from IB live would be
-        extremely slow and is unnecessary.
+        Price source priority (during market hours):
+          1. IB live price — single batch call before the loop
+          2. Latest closing price from DB — fallback if IB unavailable
 
-        Returns:
-            List of scan results for all tickers
+        Historical bars always come from DB regardless of market hours.
         """
-        # Step 1: Check SPY health first (criterion #8)
-        if not self.check_spy_health():
-            logger.warning("⚠️ SPY is below 50-day MA - NO stocks will qualify (market health failed)")
+        import math
+
+        scan_start = datetime.now(ET)
+
+        # Step 1: Read config once for the entire scan cycle
+        config = self.db.get_config()
+        spy_filter_enabled = bool(config.get('spy_filter_enabled', True))
+
+        # Check SPY health (criterion #8) — only when the filter is enabled
+        if spy_filter_enabled:
+            if not self.check_spy_health():
+                logger.warning("⚠️ SPY is below 50-day MA - NO stocks will qualify (market health failed)")
+        else:
+            self.spy_qualified = True
+            logger.info("ℹ️ SPY filter disabled in config — treating criterion 8 as passing for all tickers")
 
         # Step 2: Get active tickers
         tickers = self.db.get_active_tickers()
-
         if not tickers:
             logger.warning("⚠️ No active tickers to scan")
             return []
 
         logger.info(f"Scanning {len(tickers)} tickers...")
 
-        # Step 3: Batch-fetch all live prices from IB in one call.
-        # This is far faster than fetching per-symbol (one round-trip vs 90+).
+        # Step 3: Batch-fetch ALL bars in one SQL query
+        t0 = datetime.now(ET)
+        all_bars = self.db.get_all_daily_bars_batch(tickers, limit=300)
+        logger.info(f"⚡ Batch bar fetch: {len(all_bars)} symbols in {(datetime.now(ET)-t0).total_seconds():.1f}s")
+
+        # Step 4: Live price fetch — ONLY during market hours
         live_prices = {}
-        if self.fetcher.connected:
-            logger.info(f"📡 Fetching live prices from IB for {len(tickers)} tickers...")
+        market_open = self._market_is_open()
+        if market_open and self.fetcher.connected:
+            logger.info(f"📡 Market open — fetching live prices from IB for {len(tickers)} tickers...")
             try:
                 live_prices = self.fetcher.fetch_multiple_prices(tickers)
                 logger.info(f"✅ Got live IB prices for {len(live_prices)}/{len(tickers)} tickers")
             except Exception as e:
-                logger.warning(f"⚠️ IB batch price fetch failed — will fall back to DB prices: {e}")
+                logger.warning(f"⚠️ IB batch price fetch failed — falling back to DB prices: {e}")
+        elif not market_open:
+            logger.info("🌙 Market closed — skipping IB price fetch, using DB closing prices")
         else:
             logger.warning("⚠️ IB not connected — using database closing prices as current price")
+
+        # Build set of open position symbols
+        open_positions = self.db.get_positions()
+        open_symbols = {p["symbol"] for p in open_positions}
 
         results = []
 
         for i, symbol in enumerate(tickers, 1):
             try:
-                logger.info(f"[{i}/{len(tickers)}] Scanning {symbol}...")
-
-                # Get historical bars from database (needed for MA / 52-week calcs)
-                bars = self.db.get_daily_bars(symbol, limit=300)
+                # Use pre-fetched batch bars (no per-ticker DB call)
+                bars = all_bars.get(symbol, [])
 
                 if not bars or len(bars) < 250:
-                    logger.warning(f"⚠️ {symbol}: Insufficient historical data in database ({len(bars) if bars else 0} bars)")
+                    logger.warning(f"⚠️ {symbol}: Insufficient data ({len(bars)} bars, need 250)")
                     results.append(self._failed_result(symbol, "No data"))
                     continue
 
-                # Reverse to get chronological order (oldest to newest)
-                bars.reverse()
-
+                # Bars come back DESC from batch query — reverse to chronological
+                bars = list(reversed(bars))
                 latest_bar = bars[-1]
 
-                # Use IB live price when available, otherwise fall back to DB close.
-                # Guard against nan/inf which IB can return for illiquid/halted symbols.
-                import math
+                # Resolve current price: IB live → DB close fallback
                 ib_price = live_prices.get(symbol)
                 if ib_price is not None and not math.isnan(float(ib_price)) and not math.isinf(float(ib_price)):
                     current_price = float(ib_price)
@@ -266,35 +309,33 @@ class MinerviniScanner:
                     current_price = float(latest_bar['close']) if latest_bar['close'] else 0.0
                     price_source = "DB-close"
 
-                # Volume still comes from the latest DB bar (IB intraday volume
-                # is not meaningful for the daily-volume breakout criterion)
+                # Volume from latest DB bar (intraday IB volume is not valid for daily criterion)
                 current_volume = int(latest_bar['volume']) if latest_bar['volume'] else 0
 
-                if current_price == 0:
-                    logger.warning(f"⚠️ {symbol}: Price is 0, skipping")
+                if current_price <= 0:
+                    logger.warning(f"⚠️ {symbol}: Invalid price ({current_price}), skipping")
                     results.append(self._failed_result(symbol, "Invalid price"))
                     continue
 
-                logger.info(f"{symbol}: Price=${current_price:.2f} ({price_source}), Volume={current_volume:,}")
+                logger.debug(f"[{i}/{len(tickers)}] {symbol}: ${current_price:.2f} ({price_source})")
 
-                # Calculate criteria
-                result = self.calculate_criteria(symbol, bars, current_price, current_volume)
+                # Evaluate all 8 criteria
+                result = self.calculate_criteria(symbol, bars, current_price, current_volume, config)
+                result['in_portfolio'] = symbol in open_symbols
+
                 results.append(result)
-
-                # Save to database
                 self.db.save_scan_result(result)
 
-                # Log if qualified
                 if result['qualified']:
-                    logger.info(f"✅ {symbol} QUALIFIED - All 8 criteria met!")
+                    logger.info(f"✅ {symbol} QUALIFIED — C1={result['criteria_1']} C2={result['criteria_2']} C3={result['criteria_3']} C4={result['criteria_4']} C5={result['criteria_5']} C6={result['criteria_6']} C7={result['criteria_7']} C8={result['criteria_8']}")
 
             except Exception as e:
                 logger.error(f"❌ Error scanning {symbol}: {e}")
                 results.append(self._failed_result(symbol, str(e)))
 
-        # Summary
         qualified_count = sum(1 for r in results if r['qualified'])
-        logger.info(f"✅ Scan complete: {qualified_count}/{len(results)} stocks qualified")
+        elapsed = (datetime.now(ET) - scan_start).total_seconds()
+        logger.info(f"✅ Scan complete: {qualified_count}/{len(results)} qualified | {elapsed:.1f}s total | market={'open' if market_open else 'closed'}")
 
         return results
     
@@ -347,49 +388,86 @@ class PositionMonitor:
         Check all open positions for exit triggers:
         1. Stop loss hit (price <= stop_loss)
         2. Trend break (price < 50-day MA)
-        
+
+        Price source priority (same pattern as scan_all_tickers):
+          1. IB live prices — fetched in a single batch call (fast, one round-trip)
+          2. Latest DB closing price — fallback when IB is not connected
+
         Returns:
             List of positions that need to exit with reason
         """
+        import math
+
         positions = self.db.get_positions()
-        
+
         if not positions:
             return []
-        
+
+        symbols = [pos['symbol'] for pos in positions]
+
+        # ── Batch-fetch live prices (one IB round-trip for all positions) ──
+        # Read config once for the entire check cycle
+        config = self.db.get_config()
+        trend_break_enabled = bool(config.get('trend_break_exit_enabled', True))
+
+        live_prices = {}
+        market_open = MinerviniScanner._market_is_open()
+        if not market_open:
+            logger.info("🌙 Market closed — skipping IB price fetch for exit-trigger check, using DB closing prices")
+        elif self.fetcher.connected:
+            try:
+                live_prices = self.fetcher.fetch_multiple_prices(symbols)
+                logger.info(f"📡 Exit-trigger price fetch: got {len(live_prices)}/{len(symbols)} live prices")
+            except Exception as e:
+                logger.warning(f"⚠️ Exit-trigger batch price fetch failed — using DB prices: {e}")
+        else:
+            logger.info("ℹ️ IB not connected — using DB closing prices for exit-trigger check")
+
         exits_needed = []
-        
+
         for pos in positions:
             symbol = pos['symbol']
-            
-            try:
-                import math
-                # Get current price
-                raw_price = self.fetcher.fetch_current_price(symbol)
 
-                # Guard against None, zero, nan, inf (IB can return these for halted symbols)
-                if not raw_price:
-                    logger.warning(f"⚠️ Could not fetch price for {symbol}")
-                    continue
-                raw_price = float(raw_price)
-                if math.isnan(raw_price) or math.isinf(raw_price) or raw_price <= 0:
-                    logger.warning(f"⚠️ Invalid price for {symbol}: {raw_price}")
-                    continue
+            try:
+                # Resolve current price: IB live → DB close fallback
+                raw_price = live_prices.get(symbol)
+                if raw_price is not None:
+                    raw_price = float(raw_price)
+                    if math.isnan(raw_price) or math.isinf(raw_price) or raw_price <= 0:
+                        raw_price = None
+
+                if raw_price is None:
+                    # Fall back to latest bar close from DB
+                    bars_fallback = self.db.get_daily_bars(symbol, limit=1)
+                    if bars_fallback and bars_fallback[0].get('close'):
+                        raw_price = float(bars_fallback[0]['close'])
+                    else:
+                        logger.warning(f"⚠️ No price available for {symbol} — skipping exit check")
+                        continue
+
                 current_price = raw_price
 
                 # Check stop loss (convert Decimal DB value to float for comparison)
                 stop_loss = float(pos['stop_loss'])
                 if current_price <= stop_loss:
-                    exits_needed.append({
+                    exit_entry = {
                         'symbol': symbol,
                         'position': pos,
                         'current_price': current_price,
                         'reason': 'STOP_LOSS',
                         'trigger_price': stop_loss
-                    })
+                    }
+                    exits_needed.append(exit_entry)
+                    # Flag in DB so the morning executor picks it up
+                    if not pos.get('pending_exit'):
+                        self.db.flag_pending_exit(symbol, 'STOP_LOSS')
                     logger.warning(f"🛑 {symbol} hit STOP LOSS: ${current_price:.2f} <= ${stop_loss:.2f}")
                     continue
 
-                # Check 50-day MA break
+                # Check 50-day MA trend break (only when enabled in config)
+                if not trend_break_enabled:
+                    continue
+
                 bars = self.db.get_daily_bars(symbol, limit=60)
 
                 if bars and len(bars) >= 50:
@@ -399,16 +477,20 @@ class PositionMonitor:
                     ma_50 = sum(closes[-50:]) / 50
 
                     if current_price < ma_50:
-                        exits_needed.append({
+                        exit_entry = {
                             'symbol': symbol,
                             'position': pos,
                             'current_price': current_price,
                             'reason': 'TREND_BREAK',
                             'trigger_price': ma_50
-                        })
+                        }
+                        exits_needed.append(exit_entry)
+                        # Flag in DB so the morning executor picks it up
+                        if not pos.get('pending_exit'):
+                            self.db.flag_pending_exit(symbol, 'TREND_BREAK')
                         logger.warning(f"🛑 {symbol} TREND BREAK: ${current_price:.2f} < 50-day MA ${ma_50:.2f}")
-                
+
             except Exception as e:
                 logger.error(f"❌ Error checking exits for {symbol}: {e}")
-        
+
         return exits_needed

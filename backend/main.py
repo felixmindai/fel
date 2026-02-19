@@ -25,7 +25,7 @@ import json
 from database import Database
 from data_fetcher import DataFetcher, AsyncDataFetcher
 from scanner import MinerviniScanner, PositionMonitor
-from data_updater import data_update_scheduler_loop, run_data_update
+from data_updater import data_update_scheduler_loop, run_data_update, market_open_scheduler_loop
 from zoneinfo import ZoneInfo
 
 ET = ZoneInfo("America/New_York")  # all date logic uses ET, not machine local
@@ -92,6 +92,7 @@ class TickerAdd(BaseModel):
     sector: Optional[str] = None
 
 class ConfigUpdate(BaseModel):
+    # Trading parameters
     stop_loss_pct: Optional[float] = None
     max_positions: Optional[int] = None
     position_size_usd: Optional[float] = None
@@ -99,6 +100,17 @@ class ConfigUpdate(BaseModel):
     auto_execute: Optional[bool] = None
     default_entry_method: Optional[str] = None
     data_update_time: Optional[str] = None
+    order_execution_time: Optional[str] = None
+    # Buy qualification criteria thresholds
+    near_52wh_pct: Optional[float] = None
+    above_52wl_pct: Optional[float] = None
+    volume_multiplier: Optional[float] = None
+    spy_filter_enabled: Optional[bool] = None
+    limit_order_premium_pct: Optional[float] = None
+    # Sell qualification
+    trend_break_exit_enabled: Optional[bool] = None
+    # Scanner scheduler
+    scanner_interval_seconds: Optional[int] = None
 
 class PositionCreate(BaseModel):
     symbol: str
@@ -123,9 +135,12 @@ class BotState:
         self.scanner_running = False
         self.scanner_task = None
         self.data_updater_task = None
+        self.market_open_task = None
         self.latest_results = []
         self.websocket_clients = set()
         self.ib_connected = False
+        self.execution_running = False        # True while run_order_execution is in progress
+        self.last_execution: dict | None = None  # Summary of the most recent execution run
 
 bot_state = BotState()
 
@@ -163,12 +178,16 @@ async def scanner_loop():
                 logger.warning(f"⚠️ {len(exits)} position(s) need to exit")
                 await broadcast_exit_triggers(exits)
             
-            # Wait before next scan (30 seconds)
-            await asyncio.sleep(30)
+            # Read interval dynamically so UI changes take effect without restart
+            _cfg = bot_state.db.get_config()
+            _interval = int(_cfg.get('scanner_interval_seconds') or 30)
+            await asyncio.sleep(_interval)
             
         except Exception as e:
             logger.error(f"❌ Scanner loop error: {e}")
-            await asyncio.sleep(60)  # Wait longer on error
+            import traceback
+            logger.error(traceback.format_exc())
+            await asyncio.sleep(10)  # Short retry on error
     
     logger.info("🛑 Scanner loop stopped")
 
@@ -265,6 +284,17 @@ async def startup():
         data_update_scheduler_loop(bot_state)
     )
 
+    # Start the market-open order execution scheduler
+    bot_state.market_open_task = asyncio.create_task(
+        market_open_scheduler_loop(bot_state)
+    )
+
+    # Auto-start the scanner — always runs unless manually stopped via Settings
+    bot_state.scanner_running = True
+    bot_state.db.set_scanner_status(True)
+    bot_state.scanner_task = asyncio.create_task(scanner_loop())
+    logger.info("✅ Scanner auto-started on startup")
+
     logger.info("✅ Bot API ready")
 
 @app.on_event("shutdown")
@@ -281,6 +311,10 @@ async def shutdown():
     # Stop data updater scheduler
     if bot_state.data_updater_task:
         bot_state.data_updater_task.cancel()
+
+    # Stop market-open order execution scheduler
+    if bot_state.market_open_task:
+        bot_state.market_open_task.cancel()
 
     # Disconnect from IB
     await bot_state.async_fetcher.disconnect()
@@ -505,20 +539,39 @@ async def remove_ticker(symbol: str):
 
 @app.get("/api/positions")
 async def get_positions():
-    """Get all open positions."""
+    """Get all open positions with current prices fetched in a single batch call."""
+    import math
     positions = bot_state.db.get_positions()
-    
-    # Enrich with current prices
-    for pos in positions:
-        current_price = await bot_state.async_fetcher.fetch_current_price(pos['symbol'])
-        if current_price:
-            pos['current_price'] = current_price
-            pos['current_value'] = current_price * pos['quantity']
-            pos['pnl'] = pos['current_value'] - pos['cost_basis']
-            pos['pnl_pct'] = (pos['pnl'] / pos['cost_basis']) * 100
-    
+
+    if positions and bot_state.fetcher.connected:
+        # Batch-fetch all prices in one round-trip (much faster than one-by-one)
+        symbols = [pos['symbol'] for pos in positions]
+        try:
+            loop = asyncio.get_event_loop()
+            live_prices = await loop.run_in_executor(
+                None,
+                lambda: bot_state.fetcher.fetch_multiple_prices(symbols)
+            )
+        except Exception as e:
+            logger.warning(f"Batch price fetch failed for positions: {e}")
+            live_prices = {}
+
+        for pos in positions:
+            raw = live_prices.get(pos['symbol'])
+            if raw:
+                raw = float(raw)
+                if math.isnan(raw) or math.isinf(raw) or raw <= 0:
+                    raw = None
+            current_price = raw
+            if current_price:
+                cost_basis = float(pos['cost_basis'])
+                pos['current_price'] = current_price
+                pos['current_value'] = current_price * float(pos['quantity'])
+                pos['pnl'] = pos['current_value'] - cost_basis
+                pos['pnl_pct'] = (pos['pnl'] / cost_basis) * 100 if cost_basis else 0
+
     # Convert Decimals to floats
-    return convert_decimals({"positions": positions})
+    return convert_decimals({"positions": positions, "count": len(positions)})
 
 @app.post("/api/positions")
 async def create_position(position: PositionCreate):
@@ -641,7 +694,15 @@ async def update_config(config: ConfigUpdate):
         'paper_trading': config.paper_trading if config.paper_trading is not None else current_config['paper_trading'],
         'auto_execute': config.auto_execute if config.auto_execute is not None else current_config['auto_execute'],
         'default_entry_method': config.default_entry_method if config.default_entry_method is not None else current_config.get('default_entry_method', 'prev_close'),
-        'data_update_time': config.data_update_time if config.data_update_time is not None else current_config.get('data_update_time', '17:00')
+        'data_update_time': config.data_update_time if config.data_update_time is not None else current_config.get('data_update_time'),
+        'order_execution_time': config.order_execution_time if config.order_execution_time is not None else current_config.get('order_execution_time'),
+        'near_52wh_pct': config.near_52wh_pct if config.near_52wh_pct is not None else current_config.get('near_52wh_pct', 5.0),
+        'above_52wl_pct': config.above_52wl_pct if config.above_52wl_pct is not None else current_config.get('above_52wl_pct', 30.0),
+        'volume_multiplier': config.volume_multiplier if config.volume_multiplier is not None else current_config.get('volume_multiplier', 1.5),
+        'spy_filter_enabled': config.spy_filter_enabled if config.spy_filter_enabled is not None else current_config.get('spy_filter_enabled', True),
+        'trend_break_exit_enabled': config.trend_break_exit_enabled if config.trend_break_exit_enabled is not None else current_config.get('trend_break_exit_enabled', True),
+        'limit_order_premium_pct': config.limit_order_premium_pct if config.limit_order_premium_pct is not None else current_config.get('limit_order_premium_pct', 1.0),
+        'scanner_interval_seconds': config.scanner_interval_seconds if config.scanner_interval_seconds is not None else current_config.get('scanner_interval_seconds', 30),
     }
     
     success = bot_state.db.update_config(updated_config)
@@ -673,6 +734,18 @@ async def get_data_update_status():
     """Get current data update status."""
     return convert_decimals(bot_state.db.get_data_update_status())
 
+
+@app.post("/api/orders/execute-now")
+async def execute_orders_now():
+    """Manually trigger order execution immediately (buy + exit), bypassing the scheduler."""
+    from order_executor import run_order_execution
+    config = bot_state.db.get_config()
+    if not config.get("auto_execute"):
+        raise HTTPException(status_code=400, detail="Auto-execute is OFF — enable it in Settings first")
+    asyncio.create_task(run_order_execution(bot_state))
+    return {"success": True, "message": "Order execution started"}
+
+
 # ============================================================================
 # WEBSOCKET
 # ============================================================================
@@ -699,7 +772,9 @@ async def websocket_endpoint(websocket: WebSocket):
                         "ib_connected": bool(bot_state.fetcher.connected),
                         "active_tickers": int(status.get('active_tickers') or 0),
                         "open_positions": int(status.get('open_positions') or 0),
-                        "last_scan": int(status.get('last_scan') or 0)
+                        "last_scan": int(status.get('last_scan') or 0),
+                        "execution_running": bool(bot_state.execution_running),
+                        "last_execution": bot_state.last_execution,
                     }
                 }
                 
@@ -711,7 +786,8 @@ async def websocket_endpoint(websocket: WebSocket):
                         "max_positions": int(config.get('max_positions') or 16),
                         "position_size_usd": float(config.get('position_size_usd') or 10000),
                         "paper_trading": bool(config.get('paper_trading', True)),
-                        "auto_execute": bool(config.get('auto_execute', False))
+                        "auto_execute": bool(config.get('auto_execute', False)),
+                        "order_execution_time": config.get('order_execution_time')
                     }
                 
                 # Add statistics if available

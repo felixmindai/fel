@@ -112,9 +112,50 @@ function App() {
     }
   };
 
-  const [lastUpdated, setLastUpdated] = useState(null);
   const [lastScanUpdate, setLastScanUpdate] = useState(null);
   const [dataUpdateStatus, setDataUpdateStatus] = useState(null);
+
+  // Fetch functions defined before WebSocket so they are in scope for the WS message handler
+  const fetchStatus = async () => {
+    try {
+      const response = await fetch(`${API_BASE}/status`);
+      const data = await response.json();
+      setStatus(data);
+    } catch (error) {
+      console.error('Error fetching status:', error);
+    }
+  };
+
+  const fetchScanResults = async () => {
+    try {
+      const response = await fetch(`${API_BASE}/scanner/results`);
+      const data = await response.json();
+      setScanResults(data.results || []);
+      setLastScanUpdate(new Date());
+    } catch (error) {
+      console.error('Error fetching scan results:', error);
+    }
+  };
+
+  const fetchPositions = async () => {
+    try {
+      const response = await fetch(`${API_BASE}/positions`);
+      const data = await response.json();
+      setPositions(data.positions || []);
+    } catch (error) {
+      console.error('Error fetching positions:', error);
+    }
+  };
+
+  const fetchConfig = async () => {
+    try {
+      const response = await fetch(`${API_BASE}/config`);
+      const data = await response.json();
+      setConfig(data.config);
+    } catch (error) {
+      console.error('Error fetching config:', error);
+    }
+  };
 
   // ─── WebSocket with auto-reconnect ────────────────────────────────────────
   const connectWebSocket = useCallback(() => {
@@ -145,7 +186,6 @@ function App() {
 
       if (data.type === 'status') {
         setStatus(data.data);
-        setLastUpdated(new Date());
         // Sync data_update state from piggyback field so UI survives WS reconnects
         if (data.data?.data_update) {
           setDataUpdateStatus(prev => ({
@@ -156,6 +196,10 @@ function App() {
       } else if (data.type === 'scan_results') {
         setScanResults(data.results || []);
         setLastScanUpdate(new Date());
+      } else if (data.type === 'orders_executed') {
+        // Buys or exits were just executed — refresh positions immediately
+        fetchPositions();
+        fetchStatus();
       } else if (data.type === 'exit_triggers') {
         console.warn('🛑 Exit triggers:', data.exits);
       } else if (data.type === 'data_update_started') {
@@ -214,57 +258,13 @@ function App() {
     fetchConfig();
   }, []);
 
-  const fetchStatus = async () => {
-    try {
-      const response = await fetch(`${API_BASE}/status`);
-      const data = await response.json();
-      setStatus(data);
-    } catch (error) {
-      console.error('Error fetching status:', error);
-    }
-  };
-
-  const fetchScanResults = async () => {
-    try {
-      const response = await fetch(`${API_BASE}/scanner/results`);
-      const data = await response.json();
-      setScanResults(data.results || []);
-      setLastScanUpdate(new Date());
-    } catch (error) {
-      console.error('Error fetching scan results:', error);
-    }
-  };
-
-  const fetchPositions = async () => {
-    try {
-      const response = await fetch(`${API_BASE}/positions`);
-      const data = await response.json();
-      setPositions(data.positions || []);
-    } catch (error) {
-      console.error('Error fetching positions:', error);
-    }
-  };
-
-  const fetchConfig = async () => {
-    try {
-      const response = await fetch(`${API_BASE}/config`);
-      const data = await response.json();
-      setConfig(data.config);
-    } catch (error) {
-      console.error('Error fetching config:', error);
-    }
-  };
-
   const handleStartScanner = async () => {
     try {
       const response = await fetch(`${API_BASE}/scanner/start`, { method: 'POST' });
       const data = await response.json();
-      if (data.success) {
-        alert('✅ Scanner started!');
-        fetchStatus();
-      }
+      if (data.success) fetchStatus();
     } catch (error) {
-      alert('❌ Failed to start scanner: ' + error.message);
+      console.error('Failed to start scanner:', error.message);
     }
   };
 
@@ -272,12 +272,9 @@ function App() {
     try {
       const response = await fetch(`${API_BASE}/scanner/stop`, { method: 'POST' });
       const data = await response.json();
-      if (data.success) {
-        alert('✅ Scanner stopped');
-        fetchStatus();
-      }
+      if (data.success) fetchStatus();
     } catch (error) {
-      alert('❌ Failed to stop scanner: ' + error.message);
+      console.error('Failed to stop scanner:', error.message);
     }
   };
 
@@ -298,44 +295,63 @@ function App() {
     }
   };
 
-  const qualifiedCount = scanResults.filter(r => r.qualified).length;
+  const openPositionSymbols = new Set(positions.map(p => p.symbol));
+  // Use DB-embedded in_portfolio flag OR live positions set — same dual-check as ScannerTable
+  // so the count is correct even before positions state has loaded
+  const qualifiedCount = scanResults.filter(
+    r => r.qualified && !r.in_portfolio && !openPositionSymbols.has(r.symbol)
+  ).length;
+
+  // ── Reusable status indicator: coloured dot + "Label: Value" ─────────────
+  const StatusDot = ({ color, label, value }) => (
+    <span className={`status-indicator ${color}`}>
+      <span className="dot" />
+      <span className="label">{label}:</span>
+      <span className="value">{value}</span>
+    </span>
+  );
+
+  // Compute execute value string once
+  const execValue = !wsConnected || !status ? null
+    : status.execution_running ? 'Running'
+    : status.last_execution?.status === 'completed'
+      ? `Done — ${status.last_execution.buys}B / ${status.last_execution.exits}E @ ${new Date(status.last_execution.finished_at).toLocaleTimeString()}`
+    : status.last_execution?.status === 'error'
+      ? `Error @ ${new Date(status.last_execution.finished_at).toLocaleTimeString()}`
+    : 'Idle';
+
+  const execColor = !status ? 'grey'
+    : status.execution_running ? 'amber'
+    : status.last_execution?.status === 'completed' ? 'green'
+    : status.last_execution?.status === 'error' ? 'red'
+    : 'grey';
 
   return (
     <div className="app">
       <header className="app-header">
         <h1>📈 Minervini Momentum Scanner <span style={{fontSize: '14px', backgroundColor: '#ffeb3b', color: '#000', padding: '4px 8px', borderRadius: '4px', marginLeft: '10px', fontWeight: 'bold'}}>v2.0</span></h1>
         <div className="header-controls">
-          {/* WebSocket live connection indicator */}
-          <span style={{
-            fontSize: '12px',
-            padding: '3px 8px',
-            borderRadius: '4px',
-            backgroundColor: wsConnected ? 'rgba(16,185,129,0.15)' : 'rgba(239,68,68,0.15)',
-            border: `1px solid ${wsConnected ? '#10b981' : '#ef4444'}`,
-            color: wsConnected ? '#10b981' : '#ef4444',
-            fontWeight: '600'
-          }}>
-            {wsConnected ? '🟢 Live' : '🔴 Reconnecting…'}
-          </span>
 
-          {status && (
-            <>
-              <span className={status.scanner_running ? 'status-running' : 'status-stopped'}>
-                {status.scanner_running ? '🟢 SCANNING' : '⚪ STOPPED'}
-              </span>
-              {/* Only show IB status when WS is actually connected so it reflects real backend state */}
-              {wsConnected && (
-                <span className={status.ib_connected ? 'status-connected' : 'status-disconnected'}>
-                  {status.ib_connected ? '✅ IB Connected' : '⚠️ IB Disconnected'}
-                </span>
-              )}
-              {lastUpdated && (
-                <span style={{fontSize: '12px', color: '#666', marginLeft: '15px'}}>
-                  Status: {lastUpdated.toLocaleTimeString()}
-                </span>
-              )}
-            </>
+          {/* IB — only shown once WS is connected */}
+          {wsConnected && status && (
+            status.ib_connected
+              ? <StatusDot color="green" label="IB" value="Connected" />
+              : <StatusDot color="red"   label="IB" value="Disconnected" />
           )}
+
+          {/* Scanner */}
+          {!wsConnected
+            ? <StatusDot color="red"   label="Scanner" value="Connecting…" />
+            : status?.scanner_running
+              ? <StatusDot color="green" label="Scanner" value="Running" />
+              : <StatusDot color="grey"  label="Scanner" value="Stopped" />
+          }
+
+          {/* Execute — only shown once WS is connected */}
+          {wsConnected && status && (
+            <StatusDot color={execColor} label="Execute" value={execValue} />
+          )}
+
         </div>
       </header>
 
@@ -345,22 +361,8 @@ function App() {
           qualifiedCount={qualifiedCount}
           totalTickers={scanResults.length}
           lastScanUpdate={lastScanUpdate}
-          dataUpdateStatus={dataUpdateStatus}
-          onUpdateDataNow={handleUpdateDataNow}
         />
       )}
-
-      <div className="scanner-controls">
-        {!status?.scanner_running ? (
-          <button className="btn btn-primary" onClick={handleStartScanner}>
-            🚀 Start Scanner
-          </button>
-        ) : (
-          <button className="btn btn-danger" onClick={handleStopScanner}>
-            🛑 Stop Scanner
-          </button>
-        )}
-      </div>
 
       <nav className="tab-nav">
         <button 
@@ -369,11 +371,11 @@ function App() {
         >
           🔍 Scanner ({qualifiedCount})
         </button>
-        <button 
-          className={activeTab === 'portfolio' ? 'active' : ''} 
+        <button
+          className={activeTab === 'portfolio' ? 'active' : ''}
           onClick={() => setActiveTab('portfolio')}
         >
-          💼 Portfolio ({positions.length})
+          💼 Portfolio ({positions.length > 0 ? positions.length : (status?.open_positions || 0)})
         </button>
         <button 
           className={activeTab === 'tickers' ? 'active' : ''} 
@@ -391,7 +393,7 @@ function App() {
 
       <main className="app-content">
         {activeTab === 'scanner' && (
-          <ScannerTable 
+          <ScannerTable
             results={scanResults.map(r => ({
               ...r,
               override: overrides[r.symbol] || false,
@@ -403,6 +405,7 @@ function App() {
             onOverrideToggle={handleOverrideToggle}
             onEntryMethodChange={handleEntryMethodChange}
             defaultEntryMethod={config?.default_entry_method || 'prev_close'}
+            openPositionSymbols={openPositionSymbols}
           />
         )}
         {activeTab === 'portfolio' && (
@@ -416,7 +419,13 @@ function App() {
           <TickerManager onUpdate={fetchStatus} />
         )}
         {activeTab === 'config' && (
-          <ConfigPanel config={config} onUpdate={fetchConfig} />
+          <ConfigPanel
+            config={config}
+            onUpdate={fetchConfig}
+            status={status}
+            dataUpdateStatus={dataUpdateStatus}
+            onUpdateDataNow={handleUpdateDataNow}
+          />
         )}
       </main>
 

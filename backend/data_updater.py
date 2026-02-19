@@ -24,6 +24,9 @@ from typing import TYPE_CHECKING, Optional
 if TYPE_CHECKING:
     pass  # BotState imported at runtime inside functions to avoid circular import
 
+# order_executor is a sibling module in the same backend directory — safe to import at module level
+from order_executor import run_order_execution
+
 logger = logging.getLogger(__name__)
 
 ET = ZoneInfo("America/New_York")
@@ -36,7 +39,7 @@ PROGRESS_EVERY = 10      # broadcast progress every N tickers
 # Helpers
 # ---------------------------------------------------------------------------
 
-def seconds_until_next_trigger(update_time_str: str) -> float:
+def seconds_until_next_trigger(update_time_str: str, grace_minutes: int = 0) -> float:
     """
     Return the number of seconds until the next weekday trigger at
     `update_time_str` (HH:MM, 24-hour, Eastern Time).
@@ -44,15 +47,32 @@ def seconds_until_next_trigger(update_time_str: str) -> float:
     Handles DST transitions automatically via ZoneInfo.
     Skips Saturday and Sunday; if today is a weekday and the trigger has
     not yet passed, targets today; otherwise targets the next Mon–Fri.
+
+    grace_minutes: if > 0, a trigger that passed within this many minutes ago
+    on a weekday is treated as "just now" and returns 1 second (fire immediately).
+    Use this for the order execution scheduler so a restart within the grace window
+    still fires rather than skipping to tomorrow.
     """
     try:
         hour, minute = (int(x) for x in update_time_str.split(':'))
     except Exception:
-        logger.warning(f"Invalid update_time_str '{update_time_str}', defaulting to 17:00")
-        hour, minute = 17, 0
+        raise ValueError(
+            f"Invalid time string '{update_time_str}' — expected HH:MM (e.g. '09:30'). "
+            f"Fix the value in Settings and restart."
+        )
 
     now_et = datetime.now(ET)
     candidate = now_et.replace(hour=hour, minute=minute, second=0, microsecond=0)
+
+    # Grace window: if the trigger passed recently today on a weekday, fire now
+    if grace_minutes > 0 and candidate.weekday() < 5:
+        seconds_since = (now_et - candidate).total_seconds()
+        if 0 < seconds_since <= grace_minutes * 60:
+            logger.info(
+                f"Trigger time {update_time_str} passed {seconds_since:.0f}s ago "
+                f"(within {grace_minutes}m grace window) — firing immediately"
+            )
+            return 1.0
 
     # Step forward until we land on a future weekday trigger
     while True:
@@ -257,7 +277,11 @@ async def data_update_scheduler_loop(bot_state) -> None:
 
     while True:
         config = bot_state.db.get_config()
-        update_time = config.get('data_update_time', '17:00') or '17:00'
+        update_time = config.get('data_update_time') or ''
+        if not update_time:
+            logger.error("❌ data_update_time is not set in config — cannot schedule data update. Set it in Settings.")
+            await asyncio.sleep(60)
+            continue
         wait = seconds_until_next_trigger(update_time)
         logger.info(
             f"Next data update scheduled in {wait / 3600:.1f}h "
@@ -273,4 +297,57 @@ async def data_update_scheduler_loop(bot_state) -> None:
             bot_state.db.set_data_update_status('failed', error=str(e))
 
         # Brief buffer so a clock jitter can't re-trigger within the same minute
+        await asyncio.sleep(120)
+
+
+# ---------------------------------------------------------------------------
+# Market-open order execution scheduler
+# ---------------------------------------------------------------------------
+
+async def market_open_scheduler_loop(bot_state) -> None:
+    """
+    Long-running asyncio task. Sleeps until the configured order_execution_time
+    (set in Settings UI, weekdays only), then runs buy + exit order execution.
+
+    Reads `order_execution_time` from the DB at the top of each iteration so
+    that changes made in the Settings UI take effect on the next cycle without
+    requiring a restart.
+    """
+    logger.info("Market-open order execution scheduler started")
+
+    last_execution_date = None  # track date of last fire to prevent same-day re-fires on restart
+
+    while True:
+        config = bot_state.db.get_config()
+        exec_time = config.get("order_execution_time") or ''
+        if not exec_time:
+            logger.error("❌ order_execution_time is not set in config — cannot schedule order execution. Set it in Settings.")
+            await asyncio.sleep(60)
+            continue
+        today = datetime.now(ET).date()
+
+        # 10-minute grace window: if backend restarted within 10 min after the
+        # scheduled time, fire immediately — but only if we haven't already
+        # fired today (prevents repeated fires on rapid restarts)
+        if last_execution_date == today:
+            # Already ran today — skip grace window, wait for tomorrow's trigger
+            wait = seconds_until_next_trigger(exec_time, grace_minutes=0)
+        else:
+            wait = seconds_until_next_trigger(exec_time, grace_minutes=10)
+
+        if wait > 2:
+            logger.info(
+                f"Next order execution scheduled in {wait / 3600:.1f}h "
+                f"(at {exec_time} ET on next weekday)"
+            )
+
+        await asyncio.sleep(wait)
+
+        try:
+            await run_order_execution(bot_state)
+            last_execution_date = datetime.now(ET).date()
+        except Exception as e:
+            logger.error(f"Market-open order execution raised an unexpected error: {e}")
+
+        # Buffer to prevent double-fire from clock jitter
         await asyncio.sleep(120)

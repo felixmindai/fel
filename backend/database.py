@@ -124,6 +124,7 @@ class Database:
                     action VARCHAR(50),
                     override BOOLEAN DEFAULT false,
                     entry_method VARCHAR(50) DEFAULT NULL,
+                    in_portfolio BOOLEAN DEFAULT false,
                     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                     UNIQUE(scan_date, symbol)
                 )
@@ -144,16 +145,29 @@ class Database:
             
             # Add entry_method column if it doesn't exist (migration)
             cursor.execute("""
-                DO $$ 
+                DO $$
                 BEGIN
                     IF NOT EXISTS (
-                        SELECT 1 FROM information_schema.columns 
+                        SELECT 1 FROM information_schema.columns
                         WHERE table_name='scan_results' AND column_name='entry_method'
                     ) THEN
                         ALTER TABLE scan_results ADD COLUMN entry_method VARCHAR(50) DEFAULT NULL;
                     ELSE
                         -- Set existing 'prev_close' values to NULL (use default instead)
                         UPDATE scan_results SET entry_method = NULL WHERE entry_method = 'prev_close';
+                    END IF;
+                END $$;
+            """)
+
+            # Add in_portfolio column if it doesn't exist (migration)
+            cursor.execute("""
+                DO $$
+                BEGIN
+                    IF NOT EXISTS (
+                        SELECT 1 FROM information_schema.columns
+                        WHERE table_name='scan_results' AND column_name='in_portfolio'
+                    ) THEN
+                        ALTER TABLE scan_results ADD COLUMN in_portfolio BOOLEAN DEFAULT false;
                     END IF;
                 END $$;
             """)
@@ -164,6 +178,7 @@ class Database:
                     symbol VARCHAR(20) PRIMARY KEY,
                     entry_date DATE NOT NULL,
                     entry_price DECIMAL(12, 4) NOT NULL,
+                    submitted_price DECIMAL(12, 4) DEFAULT NULL,
                     quantity INTEGER NOT NULL,
                     stop_loss DECIMAL(12, 4) NOT NULL,
                     cost_basis DECIMAL(12, 2) NOT NULL,
@@ -172,6 +187,8 @@ class Database:
                     status VARCHAR(20) DEFAULT 'OPEN',
                     trade_id INTEGER,
                     notes TEXT,
+                    pending_exit BOOLEAN DEFAULT false,
+                    exit_reason VARCHAR(100) DEFAULT NULL,
                     last_updated TIMESTAMP DEFAULT CURRENT_TIMESTAMP
                 )
             """)
@@ -183,6 +200,7 @@ class Database:
                     symbol VARCHAR(20) NOT NULL,
                     entry_date DATE NOT NULL,
                     entry_price DECIMAL(12, 4) NOT NULL,
+                    submitted_price DECIMAL(12, 4) DEFAULT NULL,
                     exit_date DATE,
                     exit_price DECIMAL(12, 4),
                     quantity INTEGER NOT NULL,
@@ -207,6 +225,13 @@ class Database:
                     auto_execute BOOLEAN DEFAULT false,
                     scanner_running BOOLEAN DEFAULT false,
                     default_entry_method VARCHAR(50) DEFAULT 'prev_close',
+                    near_52wh_pct DECIMAL(5, 2) DEFAULT 5.0,
+                    above_52wl_pct DECIMAL(5, 2) DEFAULT 30.0,
+                    volume_multiplier DECIMAL(5, 2) DEFAULT 1.5,
+                    spy_filter_enabled BOOLEAN DEFAULT true,
+                    trend_break_exit_enabled BOOLEAN DEFAULT true,
+                    limit_order_premium_pct DECIMAL(5, 2) DEFAULT 1.0,
+                    scanner_interval_seconds INTEGER DEFAULT 30,
                     updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                     CHECK (id = 1)
                 )
@@ -258,6 +283,144 @@ class Database:
                     ) THEN
                         ALTER TABLE bot_config
                             ADD COLUMN data_update_time VARCHAR(5) DEFAULT '17:00';
+                    END IF;
+                END $$;
+            """)
+
+            # Add order execution time column if it doesn't exist (migration)
+            cursor.execute("""
+                DO $$
+                BEGIN
+                    IF NOT EXISTS (
+                        SELECT 1 FROM information_schema.columns
+                        WHERE table_name='bot_config' AND column_name='order_execution_time'
+                    ) THEN
+                        ALTER TABLE bot_config
+                            ADD COLUMN order_execution_time VARCHAR(5) DEFAULT '09:30';
+                    END IF;
+                END $$;
+            """)
+
+            # Add buy qualification criteria thresholds if they don't exist (migration)
+            cursor.execute("""
+                DO $$
+                BEGIN
+                    IF NOT EXISTS (
+                        SELECT 1 FROM information_schema.columns
+                        WHERE table_name='bot_config' AND column_name='near_52wh_pct'
+                    ) THEN
+                        ALTER TABLE bot_config ADD COLUMN near_52wh_pct DECIMAL(5, 2) DEFAULT 5.0;
+                    END IF;
+                END $$;
+            """)
+            cursor.execute("""
+                DO $$
+                BEGIN
+                    IF NOT EXISTS (
+                        SELECT 1 FROM information_schema.columns
+                        WHERE table_name='bot_config' AND column_name='above_52wl_pct'
+                    ) THEN
+                        ALTER TABLE bot_config ADD COLUMN above_52wl_pct DECIMAL(5, 2) DEFAULT 30.0;
+                    END IF;
+                END $$;
+            """)
+            cursor.execute("""
+                DO $$
+                BEGIN
+                    IF NOT EXISTS (
+                        SELECT 1 FROM information_schema.columns
+                        WHERE table_name='bot_config' AND column_name='volume_multiplier'
+                    ) THEN
+                        ALTER TABLE bot_config ADD COLUMN volume_multiplier DECIMAL(5, 2) DEFAULT 1.5;
+                    END IF;
+                END $$;
+            """)
+            cursor.execute("""
+                DO $$
+                BEGIN
+                    IF NOT EXISTS (
+                        SELECT 1 FROM information_schema.columns
+                        WHERE table_name='bot_config' AND column_name='spy_filter_enabled'
+                    ) THEN
+                        ALTER TABLE bot_config ADD COLUMN spy_filter_enabled BOOLEAN DEFAULT true;
+                    END IF;
+                END $$;
+            """)
+            cursor.execute("""
+                DO $$
+                BEGIN
+                    IF NOT EXISTS (
+                        SELECT 1 FROM information_schema.columns
+                        WHERE table_name='bot_config' AND column_name='trend_break_exit_enabled'
+                    ) THEN
+                        ALTER TABLE bot_config ADD COLUMN trend_break_exit_enabled BOOLEAN DEFAULT true;
+                    END IF;
+                END $$;
+            """)
+            cursor.execute("""
+                DO $$
+                BEGIN
+                    IF NOT EXISTS (
+                        SELECT 1 FROM information_schema.columns
+                        WHERE table_name='bot_config' AND column_name='limit_order_premium_pct'
+                    ) THEN
+                        ALTER TABLE bot_config ADD COLUMN limit_order_premium_pct DECIMAL(5, 2) DEFAULT 1.0;
+                    END IF;
+                END $$;
+            """)
+            cursor.execute("""
+                DO $$
+                BEGIN
+                    IF NOT EXISTS (
+                        SELECT 1 FROM information_schema.columns
+                        WHERE table_name='bot_config' AND column_name='scanner_interval_seconds'
+                    ) THEN
+                        ALTER TABLE bot_config ADD COLUMN scanner_interval_seconds INTEGER DEFAULT 30;
+                    END IF;
+                END $$;
+            """)
+
+            # Add pending_exit and exit_reason columns to positions if they don't exist (migration)
+            cursor.execute("""
+                DO $$
+                BEGIN
+                    IF NOT EXISTS (
+                        SELECT 1 FROM information_schema.columns
+                        WHERE table_name='positions' AND column_name='pending_exit'
+                    ) THEN
+                        ALTER TABLE positions
+                            ADD COLUMN pending_exit BOOLEAN DEFAULT false,
+                            ADD COLUMN exit_reason VARCHAR(100) DEFAULT NULL;
+                    END IF;
+                END $$;
+            """)
+
+            # Add submitted_price to positions if it doesn't exist (migration)
+            # submitted_price = the limit/prev_close price we sent to IB
+            # entry_price     = the actual average fill price returned by IB
+            cursor.execute("""
+                DO $$
+                BEGIN
+                    IF NOT EXISTS (
+                        SELECT 1 FROM information_schema.columns
+                        WHERE table_name='positions' AND column_name='submitted_price'
+                    ) THEN
+                        ALTER TABLE positions
+                            ADD COLUMN submitted_price DECIMAL(12, 4) DEFAULT NULL;
+                    END IF;
+                END $$;
+            """)
+
+            # Add submitted_price to trades if it doesn't exist (migration)
+            cursor.execute("""
+                DO $$
+                BEGIN
+                    IF NOT EXISTS (
+                        SELECT 1 FROM information_schema.columns
+                        WHERE table_name='trades' AND column_name='submitted_price'
+                    ) THEN
+                        ALTER TABLE trades
+                            ADD COLUMN submitted_price DECIMAL(12, 4) DEFAULT NULL;
                     END IF;
                 END $$;
             """)
@@ -433,6 +596,56 @@ class Database:
             cursor.close()
             conn.close()
     
+    def get_all_daily_bars_batch(self, symbols: List[str], limit: int = 300) -> Dict[str, List[Dict]]:
+        """
+        Fetch recent daily bars for ALL given symbols in a single SQL query.
+        Returns a dict mapping symbol -> list of bars (descending date order,
+        same layout as get_daily_bars so existing callers need no changes).
+
+        This replaces N individual get_daily_bars() calls in the scanner loop
+        with one round-trip, cutting scan time significantly.
+        """
+        if not symbols:
+            return {}
+
+        conn = self.get_connection()
+        cursor = conn.cursor(cursor_factory=RealDictCursor)
+
+        try:
+            # Use a window function to pick the most-recent `limit` rows per symbol
+            cursor.execute("""
+                SELECT symbol, date, open, high, low, close, volume
+                FROM (
+                    SELECT symbol, date, open, high, low, close, volume,
+                           ROW_NUMBER() OVER (PARTITION BY symbol ORDER BY date DESC) AS rn
+                    FROM daily_bars
+                    WHERE symbol = ANY(%s)
+                ) ranked
+                WHERE rn <= %s
+                ORDER BY symbol, date DESC
+            """, (list(symbols), limit))
+
+            rows = cursor.fetchall()
+
+            # Group into per-symbol lists (already DESC ordered)
+            result: Dict[str, List[Dict]] = {s: [] for s in symbols}
+            for row in rows:
+                sym = row['symbol']
+                if sym in result:
+                    result[sym].append({
+                        'date':   row['date'],
+                        'open':   row['open'],
+                        'high':   row['high'],
+                        'low':    row['low'],
+                        'close':  row['close'],
+                        'volume': row['volume'],
+                    })
+            return result
+
+        finally:
+            cursor.close()
+            conn.close()
+
     def get_latest_bar_date(self, symbol: str) -> Optional[date]:
         """Get the date of the most recent bar for a symbol."""
         conn = self.get_connection()
@@ -456,7 +669,7 @@ class Database:
         """Save a scan result."""
         conn = self.get_connection()
         cursor = conn.cursor()
-        
+
         try:
             cursor.execute("""
                 INSERT INTO scan_results (
@@ -471,12 +684,12 @@ class Database:
                     criteria_6_above_30pct_52w_low,
                     criteria_7_breakout_volume,
                     criteria_8_spy_above_50ma,
-                    qualified, action
+                    qualified, action, in_portfolio
                 ) VALUES (
                     %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s,
-                    %s, %s, %s, %s, %s, %s, %s, %s, %s, %s
+                    %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s
                 )
-                ON CONFLICT (scan_date, symbol) 
+                ON CONFLICT (scan_date, symbol)
                 DO UPDATE SET
                     price = EXCLUDED.price,
                     week_52_high = EXCLUDED.week_52_high,
@@ -497,6 +710,7 @@ class Database:
                     criteria_8_spy_above_50ma = EXCLUDED.criteria_8_spy_above_50ma,
                     qualified = EXCLUDED.qualified,
                     action = EXCLUDED.action,
+                    in_portfolio = EXCLUDED.in_portfolio,
                     created_at = CURRENT_TIMESTAMP
             """, (
                 result['scan_date'], result['symbol'], result['price'],
@@ -506,7 +720,8 @@ class Database:
                 result['criteria_1'], result['criteria_2'], result['criteria_3'],
                 result['criteria_4'], result['criteria_5'], result['criteria_6'],
                 result['criteria_7'], result['criteria_8'],
-                result['qualified'], result['action']
+                result['qualified'], result['action'],
+                result.get('in_portfolio', False)
             ))
             
             conn.commit()
@@ -524,7 +739,7 @@ class Database:
         """Get the most recent scan results for all symbols."""
         conn = self.get_connection()
         cursor = conn.cursor(cursor_factory=RealDictCursor)
-        
+
         try:
             cursor.execute("""
                 SELECT
@@ -538,7 +753,13 @@ class Database:
                     sr.criteria_7_breakout_volume         AS criteria_7,
                     sr.criteria_8_spy_above_50ma          AS criteria_8,
                     COALESCE(sr.entry_method, bc.default_entry_method, 'prev_close') as effective_entry_method,
-                    bc.default_entry_method
+                    bc.default_entry_method,
+                    -- Always derive in_portfolio live from positions table so the flag
+                    -- is accurate even across restarts / edge cases
+                    (EXISTS (
+                        SELECT 1 FROM positions p
+                        WHERE p.symbol = sr.symbol AND p.status = 'OPEN'
+                    )) AS in_portfolio
                 FROM scan_results sr
                 CROSS JOIN bot_config bc
                 WHERE sr.scan_date = (SELECT MAX(scan_date) FROM scan_results)
@@ -622,21 +843,48 @@ class Database:
             cursor.close()
             conn.close()
     
+    def update_scan_result_portfolio_flag(self, symbol: str, in_portfolio: bool) -> bool:
+        """Set or clear the in_portfolio flag on the most recent scan result for a symbol."""
+        conn = self.get_connection()
+        cursor = conn.cursor()
+        try:
+            cursor.execute("""
+                UPDATE scan_results
+                SET in_portfolio = %s
+                WHERE symbol = %s
+                  AND scan_date = (SELECT MAX(scan_date) FROM scan_results WHERE symbol = %s)
+            """, (in_portfolio, symbol, symbol))
+            conn.commit()
+            if cursor.rowcount > 0:
+                logger.info(f"✅ Set in_portfolio={in_portfolio} for {symbol}")
+                return True
+            else:
+                logger.warning(f"⚠️ No scan result found to update in_portfolio for {symbol}")
+                return False
+        except Exception as e:
+            conn.rollback()
+            logger.error(f"❌ Error updating in_portfolio for {symbol}: {e}")
+            return False
+        finally:
+            cursor.close()
+            conn.close()
+
     # ==================== POSITIONS ====================
-    
+
     def save_position(self, position: Dict) -> bool:
         """Save or update a position."""
         conn = self.get_connection()
         cursor = conn.cursor()
-        
+
         try:
             cursor.execute("""
                 INSERT INTO positions (
-                    symbol, entry_date, entry_price, quantity, stop_loss,
+                    symbol, entry_date, entry_price, submitted_price, quantity, stop_loss,
                     cost_basis, max_price, max_gain_pct, status, trade_id, notes
-                ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
                 ON CONFLICT (symbol) DO UPDATE SET
                     entry_price = EXCLUDED.entry_price,
+                    submitted_price = EXCLUDED.submitted_price,
                     quantity = EXCLUDED.quantity,
                     stop_loss = EXCLUDED.stop_loss,
                     cost_basis = EXCLUDED.cost_basis,
@@ -648,6 +896,7 @@ class Database:
                     last_updated = CURRENT_TIMESTAMP
             """, (
                 position['symbol'], position['entry_date'], position['entry_price'],
+                position.get('submitted_price'),
                 position['quantity'], position['stop_loss'], position['cost_basis'],
                 position.get('max_price', 0), position.get('max_gain_pct', 0),
                 position.get('status', 'OPEN'), position.get('trade_id'),
@@ -708,21 +957,60 @@ class Database:
             cursor.close()
             conn.close()
     
+    def flag_pending_exit(self, symbol: str, exit_reason: str) -> bool:
+        """Flag a position as pending exit at next market open."""
+        conn = self.get_connection()
+        cursor = conn.cursor()
+        try:
+            cursor.execute("""
+                UPDATE positions
+                SET pending_exit = true,
+                    exit_reason = %s,
+                    last_updated = CURRENT_TIMESTAMP
+                WHERE symbol = %s AND status = 'OPEN'
+            """, (exit_reason, symbol.upper()))
+            conn.commit()
+            logger.info(f"✅ Flagged {symbol} for exit: {exit_reason}")
+            return cursor.rowcount > 0
+        except Exception as e:
+            conn.rollback()
+            logger.error(f"❌ Error flagging pending exit for {symbol}: {e}")
+            return False
+        finally:
+            cursor.close()
+            conn.close()
+
+    def get_pending_exit_positions(self) -> List[Dict]:
+        """Get all open positions flagged for exit at next market open."""
+        conn = self.get_connection()
+        cursor = conn.cursor(cursor_factory=RealDictCursor)
+        try:
+            cursor.execute("""
+                SELECT * FROM positions
+                WHERE status = 'OPEN' AND pending_exit = true
+                ORDER BY entry_date
+            """)
+            return [dict(row) for row in cursor.fetchall()]
+        finally:
+            cursor.close()
+            conn.close()
+
     # ==================== TRADES ====================
     
     def create_trade(self, trade: Dict) -> Optional[int]:
         """Create a new trade record."""
         conn = self.get_connection()
         cursor = conn.cursor()
-        
+
         try:
             cursor.execute("""
                 INSERT INTO trades (
-                    symbol, entry_date, entry_price, quantity, cost_basis, status
-                ) VALUES (%s, %s, %s, %s, %s, 'OPEN')
+                    symbol, entry_date, entry_price, submitted_price, quantity, cost_basis, status
+                ) VALUES (%s, %s, %s, %s, %s, %s, 'OPEN')
                 RETURNING id
             """, (
                 trade['symbol'], trade['entry_date'], trade['entry_price'],
+                trade.get('submitted_price'),
                 trade['quantity'], trade['cost_basis']
             ))
             
@@ -811,18 +1099,26 @@ class Database:
         """Update bot configuration."""
         conn = self.get_connection()
         cursor = conn.cursor()
-        
+
         try:
             cursor.execute("""
                 UPDATE bot_config
-                SET stop_loss_pct = %s,
-                    max_positions = %s,
-                    position_size_usd = %s,
-                    paper_trading = %s,
-                    auto_execute = %s,
-                    default_entry_method = %s,
-                    data_update_time = %s,
-                    updated_at = CURRENT_TIMESTAMP
+                SET stop_loss_pct              = %s,
+                    max_positions              = %s,
+                    position_size_usd          = %s,
+                    paper_trading              = %s,
+                    auto_execute               = %s,
+                    default_entry_method       = %s,
+                    data_update_time           = %s,
+                    order_execution_time       = %s,
+                    near_52wh_pct              = %s,
+                    above_52wl_pct             = %s,
+                    volume_multiplier          = %s,
+                    spy_filter_enabled         = %s,
+                    trend_break_exit_enabled   = %s,
+                    limit_order_premium_pct    = %s,
+                    scanner_interval_seconds   = %s,
+                    updated_at                 = CURRENT_TIMESTAMP
                 WHERE id = 1
             """, (
                 config.get('stop_loss_pct'),
@@ -831,7 +1127,15 @@ class Database:
                 config.get('paper_trading'),
                 config.get('auto_execute'),
                 config.get('default_entry_method', 'prev_close'),
-                config.get('data_update_time', '17:00')
+                config.get('data_update_time'),
+                config.get('order_execution_time'),
+                config.get('near_52wh_pct', 5.0),
+                config.get('above_52wl_pct', 30.0),
+                config.get('volume_multiplier', 1.5),
+                config.get('spy_filter_enabled', True),
+                config.get('trend_break_exit_enabled', True),
+                config.get('limit_order_premium_pct', 1.0),
+                config.get('scanner_interval_seconds', 30),
             ))
             
             conn.commit()
@@ -883,7 +1187,7 @@ class Database:
                 'last_data_update': None,
                 'data_update_status': 'idle',
                 'data_update_error': None,
-                'data_update_time': '17:00'
+                'data_update_time': None
             }
         finally:
             cursor.close()

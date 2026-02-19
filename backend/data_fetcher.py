@@ -8,7 +8,7 @@ Fetches historical daily bars from Interactive Brokers for:
 - Real-time market data for scanning
 """
 
-from ib_insync import IB, Stock, util
+from ib_insync import IB, Stock, MarketOrder, LimitOrder, util
 from datetime import datetime, date, timedelta
 from typing import List, Dict, Optional
 import asyncio
@@ -25,34 +25,61 @@ logger = logging.getLogger(__name__)
 
 class DataFetcher:
     """Fetches historical and real-time data from Interactive Brokers."""
-    
+
     def __init__(self):
         self.ib = IB()
-        self.connected = False
-        
+        self._connected = False  # internal flag; use .connected property to read
+
         self.host = os.getenv('IB_HOST', '127.0.0.1')
         self.port = int(os.getenv('IB_PORT', '7497'))
         self.client_id = int(os.getenv('IB_CLIENT_ID', '1'))
-        
+
+    @property
+    def connected(self) -> bool:
+        """
+        True only when the ib_insync socket is actually connected.
+
+        Uses ib.isConnected() as the authoritative source so that a silent
+        drop (network hiccup, IB Gateway restart, data-farm blip) is detected
+        immediately — even if our code never called disconnect().
+        """
+        real = self.ib.isConnected()
+        if self._connected and not real:
+            # Socket dropped underneath us — sync our flag
+            logger.warning("⚠️ IB connection lost (detected via isConnected check) — resetting state")
+            self._connected = False
+        return real
+
+    @connected.setter
+    def connected(self, value: bool):
+        """Allow external code (e.g. main.py) to read bot_state.ib_connected."""
+        self._connected = value
+
     def connect(self) -> bool:
         """Connect to Interactive Brokers."""
         try:
-            if not self.connected:
-                self.ib.connect(self.host, self.port, clientId=self.client_id)
-                self.ib.reqMarketDataType(3)  # Delayed market data (free)
-                self.connected = True
-                logger.info(f"✅ Connected to IB at {self.host}:{self.port}")
+            if self.connected:          # already live — nothing to do
+                return True
+            # Re-create the IB object if the previous socket is in a broken state
+            if self._connected and not self.ib.isConnected():
+                logger.info("🔄 Re-creating IB socket after silent disconnect…")
+                self.ib = IB()
+            self.ib.connect(self.host, self.port, clientId=self.client_id)
+            self.ib.reqMarketDataType(3)  # Delayed market data (free)
+            self._connected = True
+            logger.info(f"✅ Connected to IB at {self.host}:{self.port}")
             return True
         except Exception as e:
+            self._connected = False
             logger.error(f"❌ Failed to connect to IB: {e}")
             return False
-    
+
     def disconnect(self):
         """Disconnect from Interactive Brokers."""
-        if self.connected:
+        if self.ib.isConnected():
             self.ib.disconnect()
-            self.connected = False
-            logger.info("Disconnected from IB")
+        self._connected = False
+        logger.info("Disconnected from IB")
     
     def fetch_historical_bars(self, symbol: str, duration: str = '1 Y', 
                              bar_size: str = '1 day') -> List[Dict]:
@@ -275,9 +302,184 @@ class DataFetcher:
         """Calculate average volume over period."""
         if len(bars) < period:
             return None
-        
+
         volumes = [bar['volume'] for bar in bars[-period:]]
         return int(sum(volumes) / len(volumes))
+
+    def _wait_for_fill(self, trade, symbol: str, timeout_seconds: int = 60) -> float:
+        """
+        Poll the IB trade object until the order is filled or timeout is reached.
+
+        IB's avgFillPrice is 0.0 immediately after placeOrder() because the fill
+        confirmation arrives asynchronously.  This helper pumps the IB event loop
+        in short bursts until the order status transitions to 'Filled' or the
+        timeout expires.
+
+        Args:
+            trade:           ib_insync Trade object returned by placeOrder()
+            symbol:          Ticker (used only for logging)
+            timeout_seconds: Maximum seconds to wait for a fill (default 60 s).
+                             Market orders at open typically fill within 1-5 s.
+                             Limit orders may take longer or never fill.
+
+        Returns:
+            avgFillPrice if the order was filled, else 0.0 (caller falls back to
+            submitted / limit price).
+        """
+        POLL_INTERVAL = 1  # seconds between each IB event-loop pump
+        elapsed = 0
+
+        while elapsed < timeout_seconds:
+            self.ib.sleep(POLL_INTERVAL)
+            elapsed += POLL_INTERVAL
+
+            status = trade.orderStatus.status
+            avg_fill = trade.orderStatus.avgFillPrice
+
+            logger.debug(
+                f"  [{symbol}] fill poll {elapsed}s: status={status} avgFillPrice={avg_fill}"
+            )
+
+            if status == 'Filled' and avg_fill and avg_fill > 0:
+                logger.info(
+                    f"✅ [{symbol}] Order filled after {elapsed}s "
+                    f"@ avg fill ${avg_fill:.4f}"
+                )
+                return float(avg_fill)
+
+            # IB may also report 'Cancelled', 'Inactive', etc. — stop polling early
+            if status in ('Cancelled', 'ApiCancelled', 'Inactive', 'Error'):
+                logger.warning(
+                    f"⚠️ [{symbol}] Order ended with status={status} after {elapsed}s "
+                    f"— no fill price available"
+                )
+                return 0.0
+
+        logger.warning(
+            f"⚠️ [{symbol}] Fill not confirmed within {timeout_seconds}s "
+            f"(status={trade.orderStatus.status}) — returning 0.0"
+        )
+        return 0.0
+
+    def place_market_order(self, symbol: str, quantity: int, action: str,
+                           fill_timeout: int = 60) -> Optional[Dict]:
+        """
+        Place a market order via IB and wait for the actual fill price.
+
+        Args:
+            symbol:       Stock ticker
+            quantity:     Number of shares (positive integer)
+            action:       'BUY' or 'SELL'
+            fill_timeout: Seconds to wait for fill confirmation (default 60).
+
+        Returns:
+            Dict with order_id, status, filled details, and avg_fill_price,
+            or None on failure.  avg_fill_price is 0.0 if the order was not
+            filled within fill_timeout seconds.
+        """
+        if not self.connected:
+            if not self.connect():
+                return None
+
+        try:
+            contract = Stock(symbol, 'SMART', 'USD')
+            qualified = self.ib.qualifyContracts(contract)
+            if not qualified:
+                logger.warning(f"⚠️ Could not qualify contract for {symbol}")
+                return None
+
+            contract = qualified[0]
+            order = MarketOrder(action.upper(), quantity)
+            trade = self.ib.placeOrder(contract, order)
+
+            # Allow IB a moment to acknowledge the order before polling
+            self.ib.sleep(1)
+
+            logger.info(
+                f"📤 Market {action} order placed: {symbol} x{quantity} "
+                f"| order_id={trade.order.orderId} status={trade.orderStatus.status} "
+                f"— waiting for fill (timeout={fill_timeout}s)…"
+            )
+
+            avg_fill_price = self._wait_for_fill(trade, symbol, fill_timeout)
+
+            logger.info(
+                f"✅ Market {action} complete: {symbol} x{quantity} "
+                f"| order_id={trade.order.orderId} status={trade.orderStatus.status} "
+                f"avg_fill=${avg_fill_price:.4f}"
+            )
+            return {
+                'order_id': trade.order.orderId,
+                'status': trade.orderStatus.status,
+                'filled': trade.orderStatus.filled,
+                'avg_fill_price': avg_fill_price,
+            }
+
+        except Exception as e:
+            logger.error(f"❌ Error placing market {action} order for {symbol}: {e}")
+            return None
+
+    def place_limit_order(self, symbol: str, quantity: int, action: str,
+                          limit_price: float, fill_timeout: int = 60) -> Optional[Dict]:
+        """
+        Place a limit order via IB and wait for the actual fill price.
+
+        Args:
+            symbol:       Stock ticker
+            quantity:     Number of shares (positive integer)
+            action:       'BUY' or 'SELL'
+            limit_price:  Limit price for the order
+            fill_timeout: Seconds to wait for fill confirmation (default 60).
+                          Limit orders may not fill immediately — the caller
+                          receives avg_fill_price=0.0 if the order is still
+                          open after fill_timeout seconds.
+
+        Returns:
+            Dict with order_id, status, filled details, avg_fill_price, and
+            limit_price, or None on failure.
+        """
+        if not self.connected:
+            if not self.connect():
+                return None
+
+        try:
+            contract = Stock(symbol, 'SMART', 'USD')
+            qualified = self.ib.qualifyContracts(contract)
+            if not qualified:
+                logger.warning(f"⚠️ Could not qualify contract for {symbol}")
+                return None
+
+            contract = qualified[0]
+            order = LimitOrder(action.upper(), quantity, round(limit_price, 2))
+            trade = self.ib.placeOrder(contract, order)
+
+            # Allow IB a moment to acknowledge the order before polling
+            self.ib.sleep(1)
+
+            logger.info(
+                f"📤 Limit {action} order placed: {symbol} x{quantity} @ ${limit_price:.2f} "
+                f"| order_id={trade.order.orderId} status={trade.orderStatus.status} "
+                f"— waiting for fill (timeout={fill_timeout}s)…"
+            )
+
+            avg_fill_price = self._wait_for_fill(trade, symbol, fill_timeout)
+
+            logger.info(
+                f"✅ Limit {action} complete: {symbol} x{quantity} @ limit=${limit_price:.2f} "
+                f"| order_id={trade.order.orderId} status={trade.orderStatus.status} "
+                f"avg_fill=${avg_fill_price:.4f}"
+            )
+            return {
+                'order_id': trade.order.orderId,
+                'status': trade.orderStatus.status,
+                'filled': trade.orderStatus.filled,
+                'avg_fill_price': avg_fill_price,
+                'limit_price': limit_price,
+            }
+
+        except Exception as e:
+            logger.error(f"❌ Error placing limit {action} order for {symbol}: {e}")
+            return None
 
 
 # ============================================================================
@@ -323,4 +525,18 @@ class AsyncDataFetcher:
         """Async fetch multiple prices."""
         return await asyncio.get_event_loop().run_in_executor(
             None, self.fetcher.fetch_multiple_prices, symbols
+        )
+
+    async def place_market_order(self, symbol: str, quantity: int,
+                                 action: str) -> Optional[Dict]:
+        """Async place market order."""
+        return await asyncio.get_event_loop().run_in_executor(
+            None, self.fetcher.place_market_order, symbol, quantity, action
+        )
+
+    async def place_limit_order(self, symbol: str, quantity: int, action: str,
+                                limit_price: float) -> Optional[Dict]:
+        """Async place limit order."""
+        return await asyncio.get_event_loop().run_in_executor(
+            None, self.fetcher.place_limit_order, symbol, quantity, action, limit_price
         )
