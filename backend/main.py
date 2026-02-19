@@ -211,19 +211,29 @@ async def scanner_loop():
                 continue   # re-enter loop top — market may now be open
 
             # ── Market is open: run scan + exit-trigger check ─────────────
+            loop = asyncio.get_running_loop()
+
             logger.info("🔍 Running scanner...")
-            results = await asyncio.get_event_loop().run_in_executor(
-                None,
-                bot_state.scanner.scan_all_tickers
-            )
+            try:
+                results = await asyncio.wait_for(
+                    loop.run_in_executor(None, bot_state.scanner.scan_all_tickers),
+                    timeout=120.0
+                )
+            except asyncio.TimeoutError:
+                logger.error("❌ scan_all_tickers timed out after 120s — skipping this cycle")
+                results = bot_state.latest_results  # keep last known results
             bot_state.latest_results = results
             await broadcast_scan_results(results)
 
             logger.info("🔍 Checking position exit triggers...")
-            exits = await asyncio.get_event_loop().run_in_executor(
-                None,
-                bot_state.monitor.check_exit_triggers
-            )
+            try:
+                exits = await asyncio.wait_for(
+                    loop.run_in_executor(None, bot_state.monitor.check_exit_triggers),
+                    timeout=60.0
+                )
+            except asyncio.TimeoutError:
+                logger.error("❌ check_exit_triggers timed out after 60s — skipping")
+                exits = []
             if exits:
                 logger.warning(f"⚠️ {len(exits)} position(s) need to exit")
                 await broadcast_exit_triggers(exits)
@@ -231,6 +241,7 @@ async def scanner_loop():
             # Read interval dynamically so UI changes take effect without restart
             _cfg      = bot_state.db.get_config()
             _interval = int(_cfg.get('scanner_interval_seconds') or 30)
+            logger.info(f"⏱  Scan cycle done — sleeping {_interval}s")
             await asyncio.sleep(_interval)
 
         except Exception as e:
