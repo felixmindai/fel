@@ -705,10 +705,11 @@ async def close_position(symbol: str, exit_price: Optional[float] = None):
     if not exit_price:
         raise HTTPException(status_code=503, detail=f"IB returned no price for {symbol} — please retry")
     
-    # Calculate P&L
-    proceeds = exit_price * position['quantity']
-    pnl = proceeds - position['cost_basis']
-    pnl_pct = (pnl / position['cost_basis']) * 100
+    # Calculate P&L — cast Decimal DB fields to float to avoid TypeError
+    cost_basis = float(position['cost_basis'])
+    proceeds   = exit_price * float(position['quantity'])
+    pnl        = proceeds - cost_basis
+    pnl_pct    = (pnl / cost_basis) * 100
     
     # Close trade
     bot_state.db.close_trade(
