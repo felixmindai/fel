@@ -48,7 +48,9 @@ function applySort(rows, col, dir) {
 // ──────────────────────────────────────────────────────────────────────────
 
 function ScannerTable({ results, onRefresh, onOverrideToggle, onEntryMethodChange, openPositionSymbols, onFilteredCountChange }) {
-  const [filter, setFilter]     = useState('all');
+  const [filter, setFilter]     = useState(
+    () => localStorage.getItem('scannerFilter') || 'all'
+  );
   const [viewMode, setViewMode] = useState(
     () => localStorage.getItem('scannerViewMode') || 'simple'
   );
@@ -120,7 +122,7 @@ function ScannerTable({ results, onRefresh, onOverrideToggle, onEntryMethodChang
         <h2 style={{ fontSize: '1rem', margin: 0 }}>Scanner Results</h2>
         <select
           value={filter}
-          onChange={(e) => setFilter(e.target.value)}
+          onChange={(e) => { setFilter(e.target.value); localStorage.setItem('scannerFilter', e.target.value); }}
           style={{ padding: '0.3rem 0.5rem', fontSize: '0.82rem', background: '#111827', border: '1px solid #374151', borderRadius: '0.25rem', color: '#fff' }}
         >
           <option value="all">All Tickers ({totalCount})</option>

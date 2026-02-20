@@ -78,7 +78,14 @@ function ScannerStatusBar({ scannerRunning, lastUpdated }) {
 }
 
 function App() {
-  const [activeTab, setActiveTab] = useState('dashboard');
+  const [activeTab, setActiveTab] = useState(
+    () => localStorage.getItem('activeTab') || 'dashboard'
+  );
+
+  function handleTabChange(tab) {
+    setActiveTab(tab);
+    localStorage.setItem('activeTab', tab);
+  }
   const [status, setStatus] = useState(null);
   const [scanResults, setScanResults] = useState([]);
   const [positions, setPositions] = useState([]);
@@ -479,37 +486,37 @@ function App() {
       <nav className="tab-nav">
         <button
           className={activeTab === 'dashboard' ? 'active' : ''}
-          onClick={() => setActiveTab('dashboard')}
+          onClick={() => handleTabChange('dashboard')}
         >
           📊 Dashboard
         </button>
         <button
           className={activeTab === 'scanner' ? 'active' : ''}
-          onClick={() => setActiveTab('scanner')}
+          onClick={() => handleTabChange('scanner')}
         >
           🔍 Scanner ({scannerTabCount})
         </button>
         <button
           className={activeTab === 'portfolio' ? 'active' : ''}
-          onClick={() => setActiveTab('portfolio')}
+          onClick={() => handleTabChange('portfolio')}
         >
           📂 Open Positions ({positions.length})
         </button>
         <button
           className={activeTab === 'closed' ? 'active' : ''}
-          onClick={() => setActiveTab('closed')}
+          onClick={() => handleTabChange('closed')}
         >
           📋 Closed Positions ({closedPositions.length})
         </button>
         <button
           className={activeTab === 'tickers' ? 'active' : ''}
-          onClick={() => setActiveTab('tickers')}
+          onClick={() => handleTabChange('tickers')}
         >
           🏷️ Tickers ({status?.active_tickers || 0})
         </button>
         <button
           className={activeTab === 'config' ? 'active' : ''}
-          onClick={() => setActiveTab('config')}
+          onClick={() => handleTabChange('config')}
         >
           ⚙️ Settings
         </button>

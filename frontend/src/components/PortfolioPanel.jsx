@@ -68,6 +68,9 @@ function applySort(rows, col, dir) {
 function PortfolioPanel({ positions, config, onRefresh, onStatusRefresh, isMarketOpen }) {
   const [sortCol, setSortCol] = useState(null);
   const [sortDir, setSortDir] = useState(null);
+  const [filter, setFilter]   = useState(
+    () => localStorage.getItem('portfolioFilter') || 'all'
+  );
 
   function handleSort(col) {
     if (!SORTABLE.has(col)) return;
@@ -192,6 +195,25 @@ function PortfolioPanel({ positions, config, onRefresh, onStatusRefresh, isMarke
   const sortedPositions = applySort(positions, sortCol, sortDir);
   const trendBreakEnabled = config?.trend_break_exit_enabled !== false; // default true
 
+  // ── Pre-compute sell status for every position (needed for filter counts) ──
+  const positionsWithStatus = sortedPositions.map(pos => {
+    const slHit      = pos.last_price != null && pos.last_price <= pos.stop_loss;
+    const tbHit      = trendBreakEnabled && pos.last_price != null && pos.ma_50 != null
+                       && pos.last_price < pos.ma_50;
+    const sellQual   = slHit || tbHit;
+    const pendingExit = pos.pending_exit === true;
+    return { ...pos, _slHit: slHit, _tbHit: tbHit, _sellQual: sellQual, _pendingExit: pendingExit };
+  });
+
+  const sellCount    = positionsWithStatus.filter(p => p._pendingExit || p._sellQual).length;
+  const holdingCount = positionsWithStatus.filter(p => !p._pendingExit && !p._sellQual).length;
+
+  const filteredPositions = positionsWithStatus.filter(pos => {
+    if (filter === 'sell')    return pos._pendingExit || pos._sellQual;
+    if (filter === 'holding') return !pos._pendingExit && !pos._sellQual;
+    return true; // 'all'
+  });
+
   // ── Summary totals ──────────────────────────────────────────────────────
   const totalUnrealizedPnl     = positions.reduce((sum, p) => sum + (Number(p.pnl)        || 0), 0);
   const totalUnrealizedPnlPct  = (() => {
@@ -207,10 +229,21 @@ function PortfolioPanel({ positions, config, onRefresh, onStatusRefresh, isMarke
     <div>
       <div style={{ marginBottom: '0.75rem', display: 'flex', gap: '1.5rem', alignItems: 'center', flexWrap: 'wrap' }}>
         <h2 style={{ fontSize: '1rem', margin: 0 }}>Open Positions</h2>
+        <select
+          value={filter}
+          onChange={e => { setFilter(e.target.value); localStorage.setItem('portfolioFilter', e.target.value); }}
+          style={{ fontSize: '0.82rem', padding: '0.2rem 0.4rem', borderRadius: '4px', border: '1px solid #374151', background: '#1f2937', color: '#f9fafb', cursor: 'pointer' }}
+        >
+          <option value="all">All Positions ({positions.length})</option>
+          <option value="sell">Sell at Open ({sellCount})</option>
+          <option value="holding">Holding ({holdingCount})</option>
+        </select>
         {positions.length > 0 && (
           <>
             <span style={{ fontSize: '0.82rem', color: '#9ca3af' }}>
-              {positions.length} position{positions.length !== 1 ? 's' : ''}
+              {filteredPositions.length !== positions.length
+                ? `${filteredPositions.length} of ${positions.length} position${positions.length !== 1 ? 's' : ''}`
+                : `${positions.length} position${positions.length !== 1 ? 's' : ''}`}
             </span>
             <span style={{ fontSize: '0.82rem', color: '#9ca3af' }}>
               Market Value: {fmt$(totalMarketValue)} (Cost: {fmt$(totalCostBasis)})
@@ -241,17 +274,11 @@ function PortfolioPanel({ positions, config, onRefresh, onStatusRefresh, isMarke
           </tr>
         </thead>
         <tbody>
-          {sortedPositions.map(pos => {
-            const pnlColor = (pos.pnl || 0) >= 0 ? '#10b981' : '#ef4444';
-            const pendingExit = pos.pending_exit === true;
-            const ageLabel = priceAgeLabel(pos.price_scan_time);
-
-            // ── Sell qualification checks ──
-            const slHit  = pos.last_price != null && pos.last_price <= pos.stop_loss;
-            const tbHit  = trendBreakEnabled
-                           && pos.last_price != null && pos.ma_50 != null
-                           && pos.last_price < pos.ma_50;
-            const sellQual = slHit || tbHit;
+          {filteredPositions.map(pos => {
+            const pnlColor    = (pos.pnl || 0) >= 0 ? '#10b981' : '#ef4444';
+            const pendingExit = pos._pendingExit;
+            const sellQual    = pos._sellQual;
+            const ageLabel    = priceAgeLabel(pos.price_scan_time);
 
             // ── Distance indicators (how far from each trigger) ──
             // Positive = safe margin above threshold; negative = already triggered
