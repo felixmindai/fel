@@ -18,7 +18,7 @@ Buy logic (called at configured order_execution_time, set in Settings UI):
 
 Sell logic (also called at order_execution_time):
   - Queries positions where pending_exit=true (flagged by PositionMonitor)
-  - Fetches live open price from IB (falls back to last DB close)
+  - Fetches live price from IB — skips symbol entirely if no live price available
   - Places IB market sell order + closes position + trade in DB
 
 Both buy and sell broadcast WebSocket messages when executed.
@@ -363,7 +363,9 @@ async def execute_pending_exits(bot_state) -> list:
     for pos in pending:
         symbol = pos["symbol"]
 
-        # Resolve exit price: live open > last DB close fallback
+        # Resolve exit price: MUST be a live IB price — no stale DB fallback allowed.
+        # Using a stale close price for an automated sell could execute at a
+        # significantly wrong price. If IB live price is unavailable, skip entirely.
         raw = live_prices.get(symbol)
         if raw:
             raw = float(raw)
@@ -372,14 +374,11 @@ async def execute_pending_exits(bot_state) -> list:
             exit_price = None
 
         if exit_price is None:
-            # Fallback: use last close from daily_bars
-            bars = db.get_daily_bars(symbol, limit=1)
-            if bars and bars[0].get("close"):
-                exit_price = float(bars[0]["close"])
-                logger.warning(f"{symbol}: Using DB close ${exit_price:.2f} as exit price (IB unavailable)")
-            else:
-                logger.error(f"{symbol}: Cannot determine exit price — skipping")
-                continue
+            logger.error(
+                f"⛔ {symbol}: No live IB price available — skipping automated sell. "
+                f"Position remains open. Will retry on next execution cycle."
+            )
+            continue
 
         quantity = int(pos["quantity"])
         cost_basis = float(pos["cost_basis"])
@@ -434,7 +433,8 @@ async def execute_pending_exits(bot_state) -> list:
 
             if trade_id:
                 db.close_trade(trade_id, exit_date, filled_exit_price,
-                               actual_proceeds, actual_pnl, actual_pnl_pct, exit_reason)
+                               actual_proceeds, actual_pnl, actual_pnl_pct, exit_reason,
+                               stop_loss=float(pos['stop_loss']) if pos.get('stop_loss') else None)
             db.close_position(symbol)
 
             # Clear in_portfolio flag so the scanner tab reflects the exit immediately

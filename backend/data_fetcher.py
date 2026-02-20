@@ -529,6 +529,75 @@ class DataFetcher:
             logger.error(f"❌ Error placing limit {action} order for {symbol}: {e}")
             return None
 
+    def fetch_account_info(self) -> dict:
+        """
+        Return a full IB account summary.
+
+        ib_insync caches account values internally after connection, so this
+        call is essentially free — no extra subscription or network round-trip
+        is needed.  Values are refreshed by IB every ~3 minutes automatically.
+
+        Returns a dict with:
+          account_id, account_type, and one key per numeric tag (USD only).
+          Tags that IB did not send (e.g. paper-account limitations) are
+          simply absent from the returned dict.
+        """
+        if not self.connected:
+            return {"error": "Not connected to IB"}
+
+        NUMERIC_TAGS = {
+            # Balance & Liquidity
+            "NetLiquidation":                 "net_liquidation",
+            "EquityWithLoanValue":            "equity_with_loan",
+            "TotalCashValue":                 "total_cash",
+            "SettledCash":                    "settled_cash",
+            "AvailableFunds":                 "available_funds",
+            "BuyingPower":                    "buying_power",
+            "ExcessLiquidity":                "excess_liquidity",
+            "Cushion":                        "cushion",
+            "AccruedCash":                    "accrued_cash",
+            # Positions
+            "GrossPositionValue":             "gross_position_value",
+            "Leverage":                       "leverage",
+            # P&L
+            "UnrealizedPnL":                  "unrealized_pnl",
+            "RealizedPnL":                    "realized_pnl",
+            # Margin
+            "InitMarginReq":                  "init_margin_req",
+            "MaintMarginReq":                 "maint_margin_req",
+            "FullInitMarginReq":              "full_init_margin_req",
+            "FullMaintMarginReq":             "full_maint_margin_req",
+            # Day Trading
+            "DayTradesRemaining":             "day_trades_remaining",
+            "DayTradesRemainingT+1":          "day_trades_t1",
+            "DayTradesRemainingT+2":          "day_trades_t2",
+            # Reg T / Other
+            "RegTEquity":                     "regt_equity",
+            "RegTMargin":                     "regt_margin",
+            "SMA":                            "sma",
+            "Dividends":                      "dividends",
+            "PreviousDayEquityWithLoanValue": "prev_day_equity",
+        }
+        STRING_TAGS = {"AccountType": "account_type"}
+
+        try:
+            accounts = self.ib.managedAccounts()
+            result = {"account_id": accounts[0] if accounts else "Unknown"}
+
+            for av in self.ib.accountValues():
+                if av.tag in NUMERIC_TAGS and av.currency == "USD":
+                    try:
+                        result[NUMERIC_TAGS[av.tag]] = float(av.value)
+                    except (ValueError, TypeError):
+                        result[NUMERIC_TAGS[av.tag]] = None
+                elif av.tag in STRING_TAGS:
+                    result[STRING_TAGS[av.tag]] = av.value
+
+            return result
+        except Exception as e:
+            logger.error(f"❌ Error fetching account info: {e}")
+            return {"error": str(e)}
+
 
 # ============================================================================
 # ASYNC WRAPPER FOR USE IN FASTAPI
@@ -587,4 +656,10 @@ class AsyncDataFetcher:
         """Async place limit order."""
         return await asyncio.get_event_loop().run_in_executor(
             None, self.fetcher.place_limit_order, symbol, quantity, action, limit_price
+        )
+
+    async def fetch_account_info(self) -> dict:
+        """Async fetch IB account summary."""
+        return await asyncio.get_event_loop().run_in_executor(
+            None, self.fetcher.fetch_account_info
         )

@@ -22,7 +22,7 @@ function SortIndicator({ col, sortCol, sortDir }) {
 }
 
 const SORTABLE = new Set([
-  'symbol', 'entry_date', 'entry_price', 'current_price',
+  'symbol', 'entry_date', 'entry_price', 'last_price',
   'quantity', 'cost_basis', 'current_value', 'pnl', 'pnl_pct', 'stop_loss',
 ]);
 
@@ -30,16 +30,26 @@ function getPortfolioSortValue(pos, col) {
   switch (col) {
     case 'symbol':        return (pos.symbol ?? '').toLowerCase();
     case 'entry_date':    return pos.entry_date ?? '';
-    case 'entry_price':   return pos.entry_price   ?? -Infinity;
-    case 'current_price': return pos.current_price ?? -Infinity;
-    case 'quantity':      return pos.quantity       ?? -Infinity;
-    case 'cost_basis':    return pos.cost_basis     ?? -Infinity;
-    case 'current_value': return pos.current_value  ?? -Infinity;
-    case 'pnl':           return pos.pnl            ?? -Infinity;
-    case 'pnl_pct':       return pos.pnl_pct        ?? -Infinity;
-    case 'stop_loss':     return pos.stop_loss       ?? -Infinity;
+    case 'entry_price':   return pos.entry_price  ?? -Infinity;
+    case 'last_price':    return pos.last_price   ?? -Infinity;
+    case 'quantity':      return pos.quantity      ?? -Infinity;
+    case 'cost_basis':    return pos.cost_basis    ?? -Infinity;
+    case 'current_value': return pos.current_value ?? -Infinity;
+    case 'pnl':           return pos.pnl           ?? -Infinity;
+    case 'pnl_pct':       return pos.pnl_pct       ?? -Infinity;
+    case 'stop_loss':     return pos.stop_loss      ?? -Infinity;
     default:              return 0;
   }
+}
+
+// How stale is the last scan price? Returns a short human string or null.
+function priceAgeLabel(scanTimeStr) {
+  if (!scanTimeStr) return null;
+  const secs = Math.floor((Date.now() - new Date(scanTimeStr).getTime()) / 1000);
+  if (secs < 120)        return null;              // fresh — don't clutter
+  if (secs < 3600)       return `${Math.floor(secs / 60)}m ago`;
+  if (secs < 86400)      return `${Math.floor(secs / 3600)}h ago`;
+  return `${Math.floor(secs / 86400)}d ago`;
 }
 
 function applySort(rows, col, dir) {
@@ -180,9 +190,35 @@ function PortfolioPanel({ positions, config, onRefresh, onStatusRefresh, isMarke
 
   const sortedPositions = applySort(positions, sortCol, sortDir);
 
+  // ── Summary totals ──────────────────────────────────────────────────────
+  const totalUnrealizedPnl     = positions.reduce((sum, p) => sum + (Number(p.pnl)        || 0), 0);
+  const totalUnrealizedPnlPct  = (() => {
+    const totalCost = positions.reduce((sum, p) => sum + (Number(p.cost_basis) || 0), 0);
+    return totalCost > 0 ? (totalUnrealizedPnl / totalCost) * 100 : 0;
+  })();
+  const totalMarketValue       = positions.reduce((sum, p) => sum + (Number(p.current_value) || 0), 0);
+  const totalCostBasis         = positions.reduce((sum, p) => sum + (Number(p.cost_basis)    || 0), 0);
+
+  const unrealizedColor = totalUnrealizedPnl >= 0 ? '#10b981' : '#ef4444';
+
   return (
     <div>
-      <h2 style={{ marginBottom: '1rem' }}>Open Positions</h2>
+      <div style={{ marginBottom: '0.75rem', display: 'flex', gap: '1.5rem', alignItems: 'center', flexWrap: 'wrap' }}>
+        <h2 style={{ fontSize: '1rem', margin: 0 }}>Open Positions</h2>
+        {positions.length > 0 && (
+          <>
+            <span style={{ fontSize: '0.82rem', color: '#9ca3af' }}>
+              {positions.length} position{positions.length !== 1 ? 's' : ''}
+            </span>
+            <span style={{ fontSize: '0.82rem', color: '#9ca3af' }}>
+              Market Value: {fmt$(totalMarketValue)} (Cost: {fmt$(totalCostBasis)})
+            </span>
+            <span style={{ fontSize: '0.88rem', fontWeight: '600', color: unrealizedColor }}>
+              Unrealized P&amp;L: {fmt$(totalUnrealizedPnl)} ({(totalUnrealizedPnl >= 0 ? '+' : '') + totalUnrealizedPnlPct.toFixed(2)}%)
+            </span>
+          </>
+        )}
+      </div>
 
       <table>
         <thead>
@@ -190,10 +226,10 @@ function PortfolioPanel({ positions, config, onRefresh, onStatusRefresh, isMarke
             <Th col="symbol">Symbol</Th>
             <Th col="entry_date">Entry Date</Th>
             <Th col="entry_price" style={R}>Fill Price</Th>
-            <Th col="current_price" style={R}>Current Price</Th>
+            <Th col="last_price" style={R}>Last Price</Th>
             <Th col="quantity" style={R}>Qty</Th>
             <Th col="cost_basis" style={R}>Cost Basis</Th>
-            <Th col="current_value" style={R}>Cur. Value</Th>
+            <Th col="current_value" style={R}>{isMarketOpen ? 'Cur. Value' : 'Last Value'}</Th>
             <Th col="pnl" style={R}>P&amp;L $</Th>
             <Th col="pnl_pct" style={R}>P&amp;L %</Th>
             <Th col="stop_loss" style={R}>Stop Loss</Th>
@@ -204,8 +240,9 @@ function PortfolioPanel({ positions, config, onRefresh, onStatusRefresh, isMarke
         <tbody>
           {sortedPositions.map(pos => {
             const pnlColor = (pos.pnl || 0) >= 0 ? '#10b981' : '#ef4444';
-            const stopLossWarning = pos.current_price && pos.current_price <= pos.stop_loss * 1.02;
+            const stopLossWarning = pos.last_price && pos.last_price <= pos.stop_loss * 1.02;
             const pendingExit = pos.pending_exit === true;
+            const ageLabel = priceAgeLabel(pos.price_scan_time);
             const exitReasonLabel = pos.exit_reason === 'STOP_LOSS'
               ? '🛑 Stop Loss'
               : pos.exit_reason === 'TREND_BREAK'
@@ -230,7 +267,16 @@ function PortfolioPanel({ positions, config, onRefresh, onStatusRefresh, isMarke
                     )}
                   </div>
                 </td>
-                <td style={R}>{fmt$(pos.current_price)}</td>
+                <td style={R}>
+                  <div style={{ lineHeight: '1.3' }}>
+                    <span>{fmt$(pos.last_price)}</span>
+                    {ageLabel && (
+                      <div style={{ fontSize: '0.68rem', color: '#6b7280', marginTop: '1px' }}>
+                        {ageLabel}
+                      </div>
+                    )}
+                  </div>
+                </td>
                 <td style={R}>{pos.quantity}</td>
                 <td style={R}>{fmt$(pos.cost_basis)}</td>
                 <td style={R}>{fmt$(pos.current_value)}</td>
@@ -279,7 +325,7 @@ function PortfolioPanel({ positions, config, onRefresh, onStatusRefresh, isMarke
                     onClick={() => handleMarkClosed(pos.symbol, pos.entry_price)}
                     title="Sync DB: mark this position as sold without placing an IB order"
                   >
-                    Change Status to Sold
+                    Mark as Sold
                   </button>
                 </td>
               </tr>

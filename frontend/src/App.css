@@ -136,7 +136,7 @@
 .tab-nav {
   display: flex;
   gap: 0.5rem;
-  padding: 0 2rem;
+  padding: 0.4rem 2rem 0;
   background: #1a1f2e;
   border-bottom: 1px solid #374151;
 }
@@ -238,7 +238,8 @@ tr:hover {
   display: grid;
   grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));
   gap: 0.6rem;
-  margin-bottom: 1rem;
+  padding: 0.75rem 2rem 0.75rem;
+  margin-bottom: 0;
 }
 
 .summary-card {

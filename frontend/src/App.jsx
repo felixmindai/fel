@@ -1,7 +1,9 @@
 import React, { useState, useEffect, useRef, useCallback } from 'react';
 import './App.css';
+import DashboardPanel from './components/DashboardPanel';
 import ScannerTable from './components/ScannerTable';
 import PortfolioPanel from './components/PortfolioPanel';
+import ClosedPositionsPanel from './components/ClosedPositionsPanel';
 import TickerManager from './components/TickerManager';
 import ConfigPanel from './components/ConfigPanel';
 import StatusBar from './components/StatusBar';
@@ -76,7 +78,7 @@ function ScannerStatusBar({ scannerRunning, lastUpdated }) {
 }
 
 function App() {
-  const [activeTab, setActiveTab] = useState('scanner');
+  const [activeTab, setActiveTab] = useState('dashboard');
   const [status, setStatus] = useState(null);
   const [scanResults, setScanResults] = useState([]);
   const [positions, setPositions] = useState([]);
@@ -84,6 +86,8 @@ function App() {
   const [wsConnected, setWsConnected] = useState(false);
   const [overrides, setOverrides] = useState({}); // Track which stocks are overridden
   const [entryMethods, setEntryMethods] = useState({}); // Track manually set entry methods
+  const [scannerDisplayCount, setScannerDisplayCount] = useState(0); // Rows currently shown in ScannerTable
+  const [closedPositions, setClosedPositions] = useState([]);
 
   // Refs so reconnect logic always has latest values without stale closures
   const wsRef = useRef(null);
@@ -212,6 +216,16 @@ function App() {
     }
   };
 
+  const fetchClosedPositions = async () => {
+    try {
+      const response = await fetch(`${API_BASE}/positions/closed`);
+      const data = await response.json();
+      setClosedPositions(data.positions || []);
+    } catch (error) {
+      console.error('Error fetching closed positions:', error);
+    }
+  };
+
   const fetchConfig = async () => {
     try {
       const response = await fetch(`${API_BASE}/config`);
@@ -262,8 +276,9 @@ function App() {
         setScanResults(data.results || []);
         setLastScanUpdate(new Date());
       } else if (data.type === 'orders_executed') {
-        // Buys or exits were just executed — refresh positions immediately
+        // Buys or exits were just executed — refresh both open and closed positions immediately
         fetchPositions();
+        fetchClosedPositions();
         fetchStatus();
       } else if (data.type === 'exit_triggers') {
         console.warn('🛑 Exit triggers:', data.exits);
@@ -320,6 +335,7 @@ function App() {
     fetchStatus();
     fetchScanResults();
     fetchPositions();
+    fetchClosedPositions();
     fetchConfig();
   }, []);
 
@@ -448,22 +464,34 @@ function App() {
 
       <nav className="tab-nav">
         <button
+          className={activeTab === 'dashboard' ? 'active' : ''}
+          onClick={() => setActiveTab('dashboard')}
+        >
+          📊 Dashboard
+        </button>
+        <button
           className={activeTab === 'scanner' ? 'active' : ''}
           onClick={() => setActiveTab('scanner')}
         >
-          🔍 Scanner ({qualifiedCount})
+          🔍 Scanner ({scannerDisplayCount})
         </button>
         <button
           className={activeTab === 'portfolio' ? 'active' : ''}
           onClick={() => setActiveTab('portfolio')}
         >
-          💼 Portfolio ({positions.length})
+          📂 Open Positions ({positions.length})
+        </button>
+        <button
+          className={activeTab === 'closed' ? 'active' : ''}
+          onClick={() => setActiveTab('closed')}
+        >
+          📋 Closed Positions ({closedPositions.length})
         </button>
         <button
           className={activeTab === 'tickers' ? 'active' : ''}
           onClick={() => setActiveTab('tickers')}
         >
-          📋 Tickers ({status?.active_tickers || 0})
+          🏷️ Tickers ({status?.active_tickers || 0})
         </button>
         <button
           className={activeTab === 'config' ? 'active' : ''}
@@ -478,6 +506,9 @@ function App() {
       </nav>
 
       <main className="app-content">
+        {activeTab === 'dashboard' && (
+          <DashboardPanel isActive={activeTab === 'dashboard'} />
+        )}
         {activeTab === 'scanner' && (
           <ScannerTable
             results={scanResults.map(r => ({
@@ -490,15 +521,22 @@ function App() {
             onOverrideToggle={handleOverrideToggle}
             onEntryMethodChange={handleEntryMethodChange}
             openPositionSymbols={openPositionSymbols}
+            onFilteredCountChange={setScannerDisplayCount}
           />
         )}
         {activeTab === 'portfolio' && (
           <PortfolioPanel
             positions={positions}
             config={config}
-            onRefresh={fetchPositions}
+            onRefresh={() => { fetchPositions(); fetchClosedPositions(); }}
             onStatusRefresh={fetchStatus}
             isMarketOpen={isMarketOpen}
+          />
+        )}
+        {activeTab === 'closed' && (
+          <ClosedPositionsPanel
+            positions={closedPositions}
+            onReopen={() => { fetchPositions(); fetchClosedPositions(); }}
           />
         )}
         {activeTab === 'tickers' && (

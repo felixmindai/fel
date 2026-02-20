@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 
 // ─── Number formatters ──────────────────────────────────────────────────────
 const fmt$  = v => v == null ? '--' : '$' + Number(v).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
@@ -47,7 +47,7 @@ function applySort(rows, col, dir) {
 }
 // ──────────────────────────────────────────────────────────────────────────
 
-function ScannerTable({ results, onRefresh, onOverrideToggle, onEntryMethodChange, openPositionSymbols }) {
+function ScannerTable({ results, onRefresh, onOverrideToggle, onEntryMethodChange, openPositionSymbols, onFilteredCountChange }) {
   const [filter, setFilter]     = useState('all');
   const [viewMode, setViewMode] = useState(
     () => localStorage.getItem('scannerViewMode') || 'simple'
@@ -67,6 +67,17 @@ function ScannerTable({ results, onRefresh, onOverrideToggle, onEntryMethodChang
     }
   }
 
+  // Pre-compute counts for each filter option (mirrors the filter conditions below)
+  const totalCount     = results.length;
+  const qualifiedCount = results.filter(r => {
+    const inPortfolio = r.in_portfolio || openPositionSymbols?.has(r.symbol);
+    return r.qualified && !inPortfolio;
+  }).length;
+  const portfolioCount = results.filter(r =>
+    r.in_portfolio || openPositionSymbols?.has(r.symbol)
+  ).length;
+  const failedCount    = results.filter(r => !r.qualified).length;
+
   const filteredResults = applySort(
     results.filter(r => {
       const inPortfolio = r.in_portfolio || openPositionSymbols?.has(r.symbol);
@@ -77,6 +88,11 @@ function ScannerTable({ results, onRefresh, onOverrideToggle, onEntryMethodChang
     }),
     sortCol, sortDir
   );
+
+  // Notify parent whenever the visible row count changes (filter or data change)
+  useEffect(() => {
+    onFilteredCountChange?.(filteredResults.length);
+  }, [filteredResults.length, onFilteredCountChange]);
 
   // Renders a sortable <th>
   function Th({ col, children, style }) {
@@ -107,10 +123,10 @@ function ScannerTable({ results, onRefresh, onOverrideToggle, onEntryMethodChang
           onChange={(e) => setFilter(e.target.value)}
           style={{ padding: '0.3rem 0.5rem', fontSize: '0.82rem', background: '#111827', border: '1px solid #374151', borderRadius: '0.25rem', color: '#fff' }}
         >
-          <option value="all">All Tickers</option>
-          <option value="qualified">Qualified Only</option>
-          <option value="portfolio">In Portfolio</option>
-          <option value="failed">Failed Only</option>
+          <option value="all">All Tickers ({totalCount})</option>
+          <option value="qualified">Qualified Only ({qualifiedCount})</option>
+          <option value="portfolio">In Portfolio ({portfolioCount})</option>
+          <option value="failed">Failed Only ({failedCount})</option>
         </select>
         <select
           value={viewMode}

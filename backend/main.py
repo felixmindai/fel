@@ -22,6 +22,11 @@ import asyncio
 import logging
 import json
 
+try:
+    from uvicorn.protocols.utils import ClientDisconnected as _UvicornClientDisconnected
+except ImportError:
+    _UvicornClientDisconnected = type('_UvicornClientDisconnected', (Exception,), {})  # no-op fallback
+
 from database import Database
 from data_fetcher import DataFetcher, AsyncDataFetcher
 from scanner import MinerviniScanner, PositionMonitor
@@ -401,9 +406,13 @@ async def shutdown():
     if bot_state.market_open_task:
         bot_state.market_open_task.cancel()
 
-    # Disconnect from IB
-    await bot_state.async_fetcher.disconnect()
-    
+    # Disconnect from IB — ignore socket errors that occur when the OS has already
+    # closed the connection (e.g. Ctrl+C sends SIGINT before disconnect() runs).
+    try:
+        await bot_state.async_fetcher.disconnect()
+    except (ConnectionResetError, OSError):
+        pass  # Socket already closed by OS — not an error
+
     logger.info("✅ Shutdown complete")
 
 # ============================================================================
@@ -453,6 +462,14 @@ async def _get_status_dict() -> dict:
 async def get_status():
     """Get bot status."""
     return await _get_status_dict()
+
+@app.get("/api/account")
+async def get_account_info():
+    """Fetch IB account summary (values cached by ib_insync — no extra subscription needed)."""
+    if not bot_state.fetcher.connected:
+        raise HTTPException(status_code=503, detail="IB not connected — start the scanner first")
+    data = await bot_state.async_fetcher.fetch_account_info()
+    return convert_decimals(data)
 
 # ============================================================================
 # SCANNER ENDPOINTS
@@ -624,12 +641,22 @@ async def remove_ticker(symbol: str):
 
 @app.get("/api/positions")
 async def get_positions():
-    """Get all open positions. Prices come from the last scanner cycle (stored in DB)
-    so this endpoint returns instantly without making a live IB request."""
+    """Get all open positions enriched with last known price from scan_results.
+
+    Returns instantly — no live IB call. Each position includes:
+      last_price / current_value / pnl / pnl_pct derived from the latest
+      scan_results row. price_scan_time tells the frontend how stale the price is.
+    """
     positions = bot_state.db.get_positions()
     logger.info(f"📋 GET /positions — returning {len(positions)} open positions from DB")
-    # Convert Decimals to floats
     return convert_decimals({"positions": positions, "count": len(positions)})
+
+@app.get("/api/positions/closed")
+async def get_closed_positions():
+    """Get all closed positions (trade history), most-recent exit first."""
+    closed = bot_state.db.get_closed_positions()
+    logger.info(f"📋 GET /positions/closed — returning {len(closed)} closed trades from DB")
+    return convert_decimals({"positions": closed, "count": len(closed)})
 
 @app.post("/api/positions")
 async def create_position(position: PositionCreate):
@@ -762,7 +789,8 @@ async def close_position(symbol: str):
         actual_proceeds,
         actual_pnl,
         actual_pnl_pct,
-        'MANUAL_CLOSE'
+        'MANUAL_CLOSE',
+        stop_loss=float(position['stop_loss'])  # preserve original stop for safe reopen
     )
     bot_state.db.close_position(symbol)
 
@@ -839,7 +867,8 @@ async def mark_position_closed(symbol: str, exit_price: float, exit_date: Option
         proceeds,
         pnl,
         pnl_pct,
-        'MANUAL_MARK_CLOSED'
+        'MANUAL_MARK_CLOSED',
+        stop_loss=float(position['stop_loss'])  # preserve original stop for safe reopen
     )
     bot_state.db.close_position(symbol)
     bot_state.db.update_scan_result_portfolio_flag(symbol, False)
@@ -865,6 +894,61 @@ async def mark_position_closed(symbol: str, exit_price: float, exit_date: Option
         "exit_price": exit_price,
         "pnl": pnl,
         "pnl_pct": pnl_pct
+    }
+
+
+@app.patch("/api/trades/{trade_id}/reopen")
+async def reopen_trade(trade_id: int):
+    """Revert a mistakenly-closed trade back to OPEN status.
+
+    Restores the original stop_loss stored on the trade row (saved at close time).
+    Falls back to recalculating from current config only for trades that predate
+    the stop_loss persistence migration (stop_loss = NULL in trades table).
+    No IB order is placed.
+    """
+    config   = bot_state.db.get_config()
+    stop_pct = float(config.get('stop_loss_pct', 8.0))
+    mode     = "PAPER" if bool(config.get('paper_trading', True)) else "LIVE"
+
+    # Build a fallback stop_loss in case the trade predates stop_loss persistence.
+    # reopen_position() will prefer the stored value in trades.stop_loss if not NULL.
+    trades = bot_state.db.get_trades(limit=9999)
+    trade_row = next((t for t in trades if t.get('id') == trade_id), None)
+    if not trade_row or trade_row.get('status', '').upper() != 'CLOSED':
+        raise HTTPException(status_code=404, detail=f"Trade #{trade_id} not found or not CLOSED")
+
+    entry_price      = float(trade_row['entry_price'])
+    symbol           = trade_row['symbol']
+    fallback_stop    = round(entry_price * (1 - stop_pct / 100), 4)
+
+    trade = bot_state.db.reopen_position(trade_id, stop_loss=fallback_stop)
+    if not trade:
+        raise HTTPException(status_code=500, detail=f"Failed to reopen trade #{trade_id}")
+
+    # Determine what stop_loss was actually restored (stored vs fallback)
+    restored_stop = float(trade.get('stop_loss') or fallback_stop)
+
+    # Re-flag as in-portfolio in scanner results
+    bot_state.db.update_scan_result_portfolio_flag(symbol, True)
+
+    src = "stored" if trade.get('stop_loss') else f"recalculated ({stop_pct}%)"
+    logger.info(
+        f"🔄 [{mode}] Trade #{trade_id} ({symbol}) reopened — "
+        f"stop_loss=${restored_stop:.4f} ({src})"
+    )
+
+    await broadcast_message({
+        'type': 'orders_executed',
+        'timestamp': datetime.now().isoformat(),
+        'buys': 0, 'exits': 0,
+        'source': 'reopen_trade', 'symbol': symbol
+    })
+
+    return {
+        "success":   True,
+        "symbol":    symbol,
+        "stop_loss": restored_stop,
+        "message":   f"{symbol} moved back to Open Positions (stop loss ${restored_stop:.2f})"
     }
 
 
@@ -1038,7 +1122,8 @@ async def websocket_endpoint(websocket: WebSocket):
                         await websocket.send_text(fallback)
                     except:
                         break  # Connection dead, exit loop
-                except (WebSocketDisconnect, ConnectionError, ConnectionAbortedError, ConnectionResetError):
+                except (WebSocketDisconnect, ConnectionError, ConnectionAbortedError,
+                        ConnectionResetError, _UvicornClientDisconnected):
                     # Client disconnected cleanly — not an error, exit loop silently
                     break
                 except Exception as send_err:

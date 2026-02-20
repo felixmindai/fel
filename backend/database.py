@@ -425,6 +425,19 @@ class Database:
                 END $$;
             """)
 
+            # Migration: add stop_loss to trades table (preserves original stop at entry time)
+            cursor.execute("""
+                DO $$ BEGIN
+                    IF NOT EXISTS (
+                        SELECT 1 FROM information_schema.columns
+                        WHERE table_name='trades' AND column_name='stop_loss'
+                    ) THEN
+                        ALTER TABLE trades
+                            ADD COLUMN stop_loss DECIMAL(12, 4) DEFAULT NULL;
+                    END IF;
+                END $$;
+            """)
+
             # Create indexes
             cursor.execute("CREATE INDEX IF NOT EXISTS idx_daily_bars_symbol ON daily_bars(symbol)")
             cursor.execute("CREATE INDEX IF NOT EXISTS idx_daily_bars_date ON daily_bars(date)")
@@ -916,23 +929,163 @@ class Database:
             conn.close()
     
     def get_positions(self) -> List[Dict]:
-        """Get all open positions."""
+        """Get all open positions enriched with last known price from scan_results.
+
+        Joins against the latest scan_results row for each symbol to populate:
+          - last_price      : most recent scanned price (IB-live during hours, DB-close otherwise)
+          - price_scan_date : the date of that scan row (so UI can flag staleness)
+          - price_scan_time : the created_at timestamp of that scan row
+          - current_value   : last_price × quantity  (None if no scan price)
+          - pnl             : current_value - cost_basis  (None if no scan price)
+          - pnl_pct         : pnl / cost_basis × 100      (None if no scan price)
+
+        No live IB call is made — returns instantly.
+        """
         conn = self.get_connection()
         cursor = conn.cursor(cursor_factory=RealDictCursor)
-        
         try:
             cursor.execute("""
-                SELECT * FROM positions 
-                WHERE status = 'OPEN'
-                ORDER BY entry_date
+                SELECT
+                    p.*,
+                    sr.price                        AS last_price,
+                    sr.scan_date                    AS price_scan_date,
+                    sr.created_at                   AS price_scan_time,
+                    CASE WHEN sr.price IS NOT NULL
+                         THEN ROUND(sr.price * p.quantity, 2) END  AS current_value,
+                    CASE WHEN sr.price IS NOT NULL
+                         THEN ROUND(sr.price * p.quantity - p.cost_basis, 2) END AS pnl,
+                    CASE WHEN sr.price IS NOT NULL AND p.cost_basis > 0
+                         THEN ROUND(
+                             (sr.price * p.quantity - p.cost_basis) / p.cost_basis * 100,
+                             4
+                         ) END AS pnl_pct
+                FROM positions p
+                LEFT JOIN LATERAL (
+                    SELECT price, scan_date, created_at
+                    FROM scan_results
+                    WHERE symbol = p.symbol
+                    ORDER BY scan_date DESC, created_at DESC
+                    LIMIT 1
+                ) sr ON true
+                WHERE p.status = 'OPEN'
+                ORDER BY p.entry_date
             """)
-            
             return [dict(row) for row in cursor.fetchall()]
-            
         finally:
             cursor.close()
             conn.close()
     
+    def get_closed_positions(self) -> List[Dict]:
+        """Get all closed trades with full entry/exit details, ordered most-recent first."""
+        conn = self.get_connection()
+        cursor = conn.cursor(cursor_factory=RealDictCursor)
+        try:
+            cursor.execute("""
+                SELECT
+                    id,
+                    symbol,
+                    entry_date,
+                    exit_date,
+                    entry_price,
+                    submitted_price,
+                    exit_price,
+                    quantity,
+                    cost_basis,
+                    proceeds,
+                    pnl,
+                    pnl_pct,
+                    exit_reason,
+                    stop_loss,
+                    status,
+                    created_at
+                FROM trades
+                WHERE status = 'CLOSED'
+                ORDER BY exit_date DESC, created_at DESC
+            """)
+            return [dict(row) for row in cursor.fetchall()]
+        finally:
+            cursor.close()
+            conn.close()
+
+    def reopen_position(self, trade_id: int, stop_loss: float) -> Dict:
+        """Revert a mistakenly-closed trade back to OPEN status.
+
+        Clears all exit fields on the trade row and re-inserts a position record.
+        Uses the stop_loss stored in the trade row (preserved at close time) so the
+        original value is always restored regardless of config changes since entry.
+        Falls back to the caller-supplied stop_loss only if the trade row has NULL
+        (i.e. it predates the stop_loss persistence migration).
+
+        Returns the trade row so the caller has symbol/entry details for logging.
+        """
+        conn = self.get_connection()
+        cursor = conn.cursor(cursor_factory=RealDictCursor)
+        try:
+            # 1. Fetch the closed trade to get entry details
+            cursor.execute("SELECT * FROM trades WHERE id = %s AND status = 'CLOSED'", (trade_id,))
+            trade = cursor.fetchone()
+            if not trade:
+                return {}
+            trade = dict(trade)
+
+            # Prefer the stop_loss stored on the trade row; fall back to caller value
+            # for trades that predate the stop_loss persistence migration (NULL in DB).
+            restored_stop_loss = float(trade['stop_loss']) if trade.get('stop_loss') else stop_loss
+
+            # 2. Clear exit fields on the trade row; set status back to OPEN
+            cursor.execute("""
+                UPDATE trades
+                SET exit_date   = NULL,
+                    exit_price  = NULL,
+                    proceeds    = NULL,
+                    pnl         = NULL,
+                    pnl_pct     = NULL,
+                    exit_reason = NULL,
+                    stop_loss   = NULL,
+                    status      = 'OPEN'
+                WHERE id = %s
+            """, (trade_id,))
+
+            # 3. Re-insert position row (ON CONFLICT handles the rare case where it still exists)
+            cursor.execute("""
+                INSERT INTO positions
+                    (symbol, entry_date, entry_price, submitted_price,
+                     quantity, stop_loss, cost_basis, trade_id, status)
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, 'OPEN')
+                ON CONFLICT (symbol) DO UPDATE
+                    SET entry_date      = EXCLUDED.entry_date,
+                        entry_price     = EXCLUDED.entry_price,
+                        submitted_price = EXCLUDED.submitted_price,
+                        quantity        = EXCLUDED.quantity,
+                        stop_loss       = EXCLUDED.stop_loss,
+                        cost_basis      = EXCLUDED.cost_basis,
+                        trade_id        = EXCLUDED.trade_id,
+                        status          = 'OPEN',
+                        pending_exit    = false,
+                        exit_reason     = NULL,
+                        last_updated    = CURRENT_TIMESTAMP
+            """, (
+                trade['symbol'],
+                trade['entry_date'],
+                trade['entry_price'],
+                trade.get('submitted_price'),
+                trade['quantity'],
+                restored_stop_loss,
+                trade['cost_basis'],
+                trade_id,
+            ))
+
+            conn.commit()
+            logger.info(f"✅ Reopened trade #{trade_id} ({trade['symbol']})")
+            return trade
+        except Exception as e:
+            conn.rollback()
+            logger.error(f"❌ Error reopening trade #{trade_id}: {e}")
+            raise
+        finally:
+            cursor.close()
+            conn.close()
+
     def close_position(self, symbol: str) -> bool:
         """Mark a position as closed."""
         conn = self.get_connection()
@@ -1027,24 +1180,28 @@ class Database:
             cursor.close()
             conn.close()
     
-    def close_trade(self, trade_id: int, exit_date: date, exit_price: float, 
-                    proceeds: float, pnl: float, pnl_pct: float, reason: str) -> bool:
-        """Close a trade."""
+    def close_trade(self, trade_id: int, exit_date: date, exit_price: float,
+                    proceeds: float, pnl: float, pnl_pct: float, reason: str,
+                    stop_loss: float = None) -> bool:
+        """Close a trade, preserving the original stop_loss for safe reopening."""
         conn = self.get_connection()
         cursor = conn.cursor()
-        
         try:
             cursor.execute("""
-                UPDATE trades 
-                SET exit_date = %s, exit_price = %s, proceeds = %s,
-                    pnl = %s, pnl_pct = %s, exit_reason = %s, status = 'CLOSED'
+                UPDATE trades
+                SET exit_date   = %s,
+                    exit_price  = %s,
+                    proceeds    = %s,
+                    pnl         = %s,
+                    pnl_pct     = %s,
+                    exit_reason = %s,
+                    stop_loss   = COALESCE(%s, stop_loss),
+                    status      = 'CLOSED'
                 WHERE id = %s
-            """, (exit_date, exit_price, proceeds, pnl, pnl_pct, reason, trade_id))
-            
+            """, (exit_date, exit_price, proceeds, pnl, pnl_pct, reason, stop_loss, trade_id))
             conn.commit()
             logger.info(f"✅ Closed trade #{trade_id}")
             return True
-            
         except Exception as e:
             conn.rollback()
             logger.error(f"❌ Error closing trade #{trade_id}: {e}")
