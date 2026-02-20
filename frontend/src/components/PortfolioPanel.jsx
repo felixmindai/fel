@@ -117,13 +117,27 @@ function PortfolioPanel({ positions, config, onRefresh, onStatusRefresh, isMarke
   };
 
   const handleMarkClosed = async (symbol, entryPrice) => {
+    const today = new Date().toISOString().slice(0, 10); // YYYY-MM-DD
+    const defaultPrice = entryPrice != null ? Number(entryPrice).toFixed(2) : '';
     const input = window.prompt(
-      `Mark ${symbol} as closed in DB (no IB order).\n\nEnter the exit price, or leave as-is to use the entry price:`,
-      entryPrice != null ? Number(entryPrice).toFixed(2) : ''
+      `Mark ${symbol} as closed in DB (no IB order).\n\nEnter:  exit-date, exit-price\nExample: ${today}, ${defaultPrice}`,
+      `${today}, ${defaultPrice}`
     );
     if (input === null) return; // cancelled
 
-    const exitPrice = parseFloat(input);
+    const parts = input.split(',').map(s => s.trim());
+    if (parts.length !== 2) {
+      alert('❌ Please enter date and price separated by a comma.\nExample: 2026-02-19, 245.50');
+      return;
+    }
+    const [exitDateStr, exitPriceStr] = parts;
+
+    // Validate date — must be YYYY-MM-DD
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(exitDateStr)) {
+      alert('❌ Invalid date format — use YYYY-MM-DD (e.g. 2026-02-19).');
+      return;
+    }
+    const exitPrice = parseFloat(exitPriceStr);
     if (isNaN(exitPrice) || exitPrice <= 0) {
       alert('❌ Invalid price — please enter a positive number.');
       return;
@@ -131,7 +145,7 @@ function PortfolioPanel({ positions, config, onRefresh, onStatusRefresh, isMarke
 
     try {
       const response = await fetch(
-        `${API_BASE}/positions/${symbol}/mark-closed?exit_price=${exitPrice}`,
+        `${API_BASE}/positions/${symbol}/mark-closed?exit_price=${exitPrice}&exit_date=${exitDateStr}`,
         { method: 'PATCH' }
       );
       const data = await response.json();
@@ -142,6 +156,7 @@ function PortfolioPanel({ positions, config, onRefresh, onStatusRefresh, isMarke
       if (data.success) {
         alert(
           `✅ ${symbol} marked as closed in DB\n` +
+          `Exit Date: ${data.exit_date}\n` +
           `Exit Price: $${data.exit_price.toFixed(2)}\n` +
           `P&L: $${data.pnl.toFixed(2)} (${data.pnl_pct.toFixed(2)}%)\n` +
           `(No IB order was placed)`

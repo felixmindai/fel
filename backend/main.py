@@ -802,16 +802,29 @@ async def close_position(symbol: str):
 
 
 @app.patch("/api/positions/{symbol}/mark-closed")
-async def mark_position_closed(symbol: str, exit_price: float):
+async def mark_position_closed(symbol: str, exit_price: float, exit_date: Optional[str] = None):
     """
     Manually mark a position as closed in the DB without placing an IB order.
     Used when a position was already closed in IB (manually sold, expired, etc.)
     but the bot DB still shows it as OPEN. No market hours restriction.
+
+    exit_date: ISO date string YYYY-MM-DD (defaults to today ET if not supplied).
+    exit_price: Actual exit price — used to calculate P&L.
     """
+    from datetime import date as date_type
     positions = bot_state.db.get_positions()
     position = next((p for p in positions if p['symbol'] == symbol), None)
     if not position:
         raise HTTPException(status_code=404, detail="Position not found")
+
+    # Parse and validate exit_date
+    if exit_date:
+        try:
+            parsed_exit_date = date_type.fromisoformat(exit_date)
+        except ValueError:
+            raise HTTPException(status_code=400, detail=f"Invalid exit_date '{exit_date}' — use YYYY-MM-DD format")
+    else:
+        parsed_exit_date = datetime.now(ET).date()
 
     quantity   = int(position['quantity'])
     cost_basis = float(position['cost_basis'])
@@ -821,7 +834,7 @@ async def mark_position_closed(symbol: str, exit_price: float):
 
     bot_state.db.close_trade(
         position['trade_id'],
-        datetime.now(ET).date(),
+        parsed_exit_date,
         exit_price,
         proceeds,
         pnl,
@@ -835,7 +848,7 @@ async def mark_position_closed(symbol: str, exit_price: float):
     mode = "PAPER" if bool(config.get('paper_trading', True)) else "LIVE"
 
     logger.info(
-        f"📋 [{mode}] Manually marked {symbol} as CLOSED @ ${exit_price:.2f} "
+        f"📋 [{mode}] Manually marked {symbol} as CLOSED @ ${exit_price:.2f} on {parsed_exit_date} "
         f"| P&L: ${pnl:.2f} ({pnl_pct:.2f}%) — no IB order placed"
     )
 
@@ -848,6 +861,7 @@ async def mark_position_closed(symbol: str, exit_price: float):
 
     return {
         "success": True,
+        "exit_date": parsed_exit_date.isoformat(),
         "exit_price": exit_price,
         "pnl": pnl,
         "pnl_pct": pnl_pct
