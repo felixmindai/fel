@@ -948,6 +948,7 @@ class Database:
                 SELECT
                     p.*,
                     sr.price                        AS last_price,
+                    sr.ma_50                        AS ma_50,
                     sr.scan_date                    AS price_scan_date,
                     sr.created_at                   AS price_scan_time,
                     CASE WHEN sr.price IS NOT NULL
@@ -961,7 +962,7 @@ class Database:
                          ) END AS pnl_pct
                 FROM positions p
                 LEFT JOIN LATERAL (
-                    SELECT price, scan_date, created_at
+                    SELECT price, ma_50, scan_date, created_at
                     FROM scan_results
                     WHERE symbol = p.symbol
                     ORDER BY scan_date DESC, created_at DESC

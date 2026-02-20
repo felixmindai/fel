@@ -389,9 +389,13 @@ class PositionMonitor:
         1. Stop loss hit (price <= stop_loss)
         2. Trend break (price < 50-day MA)
 
-        Price source priority (same pattern as scan_all_tickers):
-          1. IB live prices — fetched in a single batch call (fast, one round-trip)
-          2. Latest DB closing price — fallback when IB is not connected
+        Price source rules (strict — no cross-contamination):
+          Market OPEN  → IB live prices only. If IB price unavailable for a symbol,
+                         skip that symbol entirely. Never fall back to DB during hours
+                         as stale/closing prices must not trigger real sell decisions.
+          Market CLOSED → DB closing prices only. No IB call is made at all.
+                          Exit checks during off-hours are informational only
+                          (pending_exit flags are only acted on at next market open).
 
         Returns:
             List of positions that need to exit with reason
@@ -405,23 +409,28 @@ class PositionMonitor:
 
         symbols = [pos['symbol'] for pos in positions]
 
-        # ── Batch-fetch live prices (one IB round-trip for all positions) ──
         # Read config once for the entire check cycle
         config = self.db.get_config()
         trend_break_enabled = bool(config.get('trend_break_exit_enabled', True))
 
-        live_prices = {}
         market_open = MinerviniScanner._market_is_open()
-        if not market_open:
-            logger.info("🌙 Market closed — skipping IB price fetch for exit-trigger check, using DB closing prices")
-        elif self.fetcher.connected:
+
+        # ── Fetch prices according to strict market-hours rule ──────────────
+        if market_open:
+            # Market is open — must use IB live prices, no fallback
+            if not self.fetcher.connected:
+                logger.warning("⚠️ Market open but IB not connected — skipping exit-trigger check entirely")
+                return []
             try:
                 live_prices = self.fetcher.fetch_multiple_prices(symbols)
-                logger.info(f"📡 Exit-trigger price fetch: got {len(live_prices)}/{len(symbols)} live prices")
+                logger.info(f"📡 Exit-trigger price fetch: got {len(live_prices)}/{len(symbols)} live IB prices")
             except Exception as e:
-                logger.warning(f"⚠️ Exit-trigger batch price fetch failed — using DB prices: {e}")
+                logger.warning(f"⚠️ Exit-trigger IB price fetch failed — skipping check entirely: {e}")
+                return []
         else:
-            logger.info("ℹ️ IB not connected — using DB closing prices for exit-trigger check")
+            # Market is closed — use DB closing prices strictly, no IB call
+            logger.info("🌙 Market closed — using DB closing prices for exit-trigger check (informational only)")
+            live_prices = {}  # will use DB path below
 
         exits_needed = []
 
@@ -429,20 +438,23 @@ class PositionMonitor:
             symbol = pos['symbol']
 
             try:
-                # Resolve current price: IB live → DB close fallback
-                raw_price = live_prices.get(symbol)
-                if raw_price is not None:
-                    raw_price = float(raw_price)
-                    if math.isnan(raw_price) or math.isinf(raw_price) or raw_price <= 0:
-                        raw_price = None
-
-                if raw_price is None:
-                    # Fall back to latest bar close from DB
-                    bars_fallback = self.db.get_daily_bars(symbol, limit=1)
-                    if bars_fallback and bars_fallback[0].get('close'):
-                        raw_price = float(bars_fallback[0]['close'])
+                if market_open:
+                    # Live price required — skip symbol if not available
+                    raw_price = live_prices.get(symbol)
+                    if raw_price is not None:
+                        raw_price = float(raw_price)
+                        if math.isnan(raw_price) or math.isinf(raw_price) or raw_price <= 0:
+                            raw_price = None
+                    if raw_price is None:
+                        logger.warning(f"⚠️ No live IB price for {symbol} — skipping exit check")
+                        continue
+                else:
+                    # Off-market — use DB closing price strictly
+                    bars_db = self.db.get_daily_bars(symbol, limit=1)
+                    if bars_db and bars_db[0].get('close'):
+                        raw_price = float(bars_db[0]['close'])
                     else:
-                        logger.warning(f"⚠️ No price available for {symbol} — skipping exit check")
+                        logger.warning(f"⚠️ No DB closing price for {symbol} — skipping exit check")
                         continue
 
                 current_price = raw_price

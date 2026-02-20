@@ -294,11 +294,11 @@ function ConfigPanel({ config, onUpdate, status, dataUpdateStatus, onUpdateDataN
 
               <div className="form-group">
                 <label>Stop Loss (%)</label>
-                <input type="number" step="0.1" min="1" max="20"
+                <input type="number" step="0.1" min="1" max="50"
                   value={formData.stop_loss_pct}
                   onChange={(e) => set('stop_loss_pct', parseFloat(e.target.value))} />
                 <small style={HINT}>
-                  Position exits when price drops this % below entry price (Minervini default: 8%)
+                  Position exits when price drops this % below entry price (Minervini default: 8%, max 50%)
                 </small>
               </div>
 

@@ -383,8 +383,22 @@ function App() {
     r => r.qualified && !r.in_portfolio && !openPositionSymbols.has(r.symbol)
   ).length;
 
+  // Compute scanner tab count directly from scanResults (default filter = 'all')
+  // so the tab label is correct on first load without needing to visit the tab.
+  const scannerTabCount = scanResults.length;
+
   // Compute once per render — used to disable the Close button in PortfolioPanel
   const isMarketOpen = _getMarketStatus().open;
+
+  // Auto-refresh positions every 30s when market is open so last_price stays
+  // fresh (matches the scanner interval — scanner writes live IB prices to
+  // scan_results every ~30s, so this keeps the UI in sync).
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  useEffect(() => {
+    if (!isMarketOpen) return;
+    const id = setInterval(fetchPositions, 30_000);
+    return () => clearInterval(id);
+  }, [isMarketOpen]);
 
   // ── Reusable status indicator: coloured dot + "Label: Value" ─────────────
   const StatusDot = ({ color, label, value }) => (
@@ -473,7 +487,7 @@ function App() {
           className={activeTab === 'scanner' ? 'active' : ''}
           onClick={() => setActiveTab('scanner')}
         >
-          🔍 Scanner ({scannerDisplayCount})
+          🔍 Scanner ({scannerTabCount})
         </button>
         <button
           className={activeTab === 'portfolio' ? 'active' : ''}

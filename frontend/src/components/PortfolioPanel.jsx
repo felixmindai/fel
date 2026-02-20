@@ -23,7 +23,7 @@ function SortIndicator({ col, sortCol, sortDir }) {
 
 const SORTABLE = new Set([
   'symbol', 'entry_date', 'entry_price', 'last_price',
-  'quantity', 'cost_basis', 'current_value', 'pnl', 'pnl_pct', 'stop_loss',
+  'quantity', 'cost_basis', 'current_value', 'pnl', 'pnl_pct', 'stop_loss', 'ma_50',
 ]);
 
 function getPortfolioSortValue(pos, col) {
@@ -38,6 +38,7 @@ function getPortfolioSortValue(pos, col) {
     case 'pnl':           return pos.pnl           ?? -Infinity;
     case 'pnl_pct':       return pos.pnl_pct       ?? -Infinity;
     case 'stop_loss':     return pos.stop_loss      ?? -Infinity;
+    case 'ma_50':         return pos.ma_50          ?? -Infinity;
     default:              return 0;
   }
 }
@@ -189,6 +190,7 @@ function PortfolioPanel({ positions, config, onRefresh, onStatusRefresh, isMarke
   }
 
   const sortedPositions = applySort(positions, sortCol, sortDir);
+  const trendBreakEnabled = config?.trend_break_exit_enabled !== false; // default true
 
   // ── Summary totals ──────────────────────────────────────────────────────
   const totalUnrealizedPnl     = positions.reduce((sum, p) => sum + (Number(p.pnl)        || 0), 0);
@@ -233,6 +235,7 @@ function PortfolioPanel({ positions, config, onRefresh, onStatusRefresh, isMarke
             <Th col="pnl" style={R}>P&amp;L $</Th>
             <Th col="pnl_pct" style={R}>P&amp;L %</Th>
             <Th col="stop_loss" style={R}>Stop Loss</Th>
+            <Th col="ma_50" style={R}>MA (50)</Th>
             <th>Status</th>
             <th>Action</th>
           </tr>
@@ -240,18 +243,29 @@ function PortfolioPanel({ positions, config, onRefresh, onStatusRefresh, isMarke
         <tbody>
           {sortedPositions.map(pos => {
             const pnlColor = (pos.pnl || 0) >= 0 ? '#10b981' : '#ef4444';
-            const stopLossWarning = pos.last_price && pos.last_price <= pos.stop_loss * 1.02;
             const pendingExit = pos.pending_exit === true;
             const ageLabel = priceAgeLabel(pos.price_scan_time);
-            const exitReasonLabel = pos.exit_reason === 'STOP_LOSS'
-              ? '🛑 Stop Loss'
-              : pos.exit_reason === 'TREND_BREAK'
-              ? '📉 Trend Break'
-              : pos.exit_reason || '';
+
+            // ── Sell qualification checks ──
+            const slHit  = pos.last_price != null && pos.last_price <= pos.stop_loss;
+            const tbHit  = trendBreakEnabled
+                           && pos.last_price != null && pos.ma_50 != null
+                           && pos.last_price < pos.ma_50;
+            const sellQual = slHit || tbHit;
+
+            // ── Distance indicators (how far from each trigger) ──
+            // Positive = safe margin above threshold; negative = already triggered
+            const distToStop = pos.last_price != null && pos.stop_loss != null
+              ? ((pos.last_price - pos.stop_loss) / pos.stop_loss) * 100
+              : null;
+            const distToMA = pos.last_price != null && pos.ma_50 != null
+              ? ((pos.last_price - pos.ma_50) / pos.ma_50) * 100
+              : null;
+            const fmtDist = v => v == null ? null
+              : (v >= 0 ? '+' : '') + v.toFixed(1) + '%';
 
             let rowStyle = {};
-            if (pendingExit)      rowStyle = { background: 'rgba(239, 68, 68, 0.25)' };
-            else if (stopLossWarning) rowStyle = { background: 'rgba(239, 68, 68, 0.1)' };
+            if (pendingExit || sellQual) rowStyle = { background: 'rgba(239, 68, 68, 0.18)' };
 
             return (
               <tr key={pos.symbol} style={rowStyle}>
@@ -286,9 +300,30 @@ function PortfolioPanel({ positions, config, onRefresh, onStatusRefresh, isMarke
                 <td style={{ ...R, color: pnlColor, fontWeight: 'bold' }}>
                   {fmtPct(pos.pnl_pct)}
                 </td>
-                <td style={R}>{fmt$(pos.stop_loss)}</td>
+                <td style={R}>
+                  <div style={{ lineHeight: '1.3' }}>
+                    <span>{fmt$(pos.stop_loss)}</span>
+                    {distToStop != null && (
+                      <div style={{ fontSize: '0.68rem', color: distToStop < 5 ? '#f59e0b' : '#6b7280', marginTop: '1px' }}>
+                        {fmtDist(distToStop)}
+                      </div>
+                    )}
+                  </div>
+                </td>
+                <td style={R}>
+                  <div style={{ lineHeight: '1.3' }}>
+                    <span>{fmt$(pos.ma_50)}</span>
+                    {distToMA != null && (
+                      <div style={{ fontSize: '0.68rem', color: distToMA < 3 ? '#f59e0b' : '#6b7280', marginTop: '1px' }}>
+                        {fmtDist(distToMA)}
+                      </div>
+                    )}
+                  </div>
+                </td>
                 <td>
-                  {pendingExit ? (
+                  {(pendingExit || sellQual) ? (
+                    // Sell triggered — either backend confirmed (pendingExit) or
+                    // frontend detects criteria met (sellQual). Both mean: sell at next open.
                     <span style={{
                       background: 'rgba(239, 68, 68, 0.2)',
                       color: '#ef4444',
@@ -298,8 +333,7 @@ function PortfolioPanel({ positions, config, onRefresh, onStatusRefresh, isMarke
                       fontWeight: 'bold',
                       whiteSpace: 'nowrap'
                     }}>
-                      ⏳ Sell at Open<br />
-                      <span style={{ fontWeight: 'normal', fontSize: '0.7rem' }}>{exitReasonLabel}</span>
+                      ⏳ Sell at Open
                     </span>
                   ) : (
                     <span style={{ color: '#10b981', fontSize: '0.85rem' }}>✅ Holding</span>
