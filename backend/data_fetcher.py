@@ -426,6 +426,47 @@ class DataFetcher:
             logger.error(f"❌ Error placing market {action} order for {symbol}: {e}")
             return None
 
+    def cancel_order(self, order_id: int) -> bool:
+        """
+        Cancel an open IB order by order ID.
+
+        Looks up the order in ib.openTrades() and sends a cancel request.
+        Used when a fill confirmation times out — cancels the pending order
+        so it does not execute at the next market open without our knowledge.
+
+        Args:
+            order_id: The IB order ID returned by place_market_order().
+
+        Returns:
+            True if cancel request was sent to IB.
+            False if order not found (may have already filled or been cancelled).
+        """
+        if not self.connected:
+            logger.warning(f"⚠️ cancel_order({order_id}): IB not connected — cannot cancel")
+            return False
+        try:
+            open_trades = self.ib.openTrades()
+            target = next(
+                (t for t in open_trades if t.order.orderId == order_id),
+                None
+            )
+            if target is None:
+                logger.warning(
+                    f"⚠️ cancel_order({order_id}): order not found in openTrades() "
+                    f"— may have already filled or been cancelled"
+                )
+                return False
+            self.ib.cancelOrder(target.order)
+            self.ib.sleep(2)  # pump the event loop so IB can acknowledge the cancel
+            logger.info(
+                f"✅ cancel_order({order_id}): cancel request sent "
+                f"| status={target.orderStatus.status}"
+            )
+            return True
+        except Exception as e:
+            logger.error(f"❌ cancel_order({order_id}): error — {e}")
+            return False
+
     def place_limit_order(self, symbol: str, quantity: int, action: str,
                           limit_price: float, fill_timeout: int = 60) -> Optional[Dict]:
         """

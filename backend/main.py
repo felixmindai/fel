@@ -172,6 +172,17 @@ def _seconds_until_market_open() -> float:
     return (candidate - now).total_seconds()
 
 
+def _is_market_open() -> bool:
+    """
+    Return True only during regular US market hours (Mon-Fri 09:30-16:00 ET).
+    Used to guard manual Close orders — IB queues orders outside market hours
+    and _wait_for_fill will time out, leaving a pending order with no DB record.
+    Delegates to the canonical scanner check to keep logic in one place.
+    """
+    from scanner import MinerviniScanner
+    return MinerviniScanner._market_is_open()
+
+
 async def scanner_loop():
     """
     Background task that runs the scanner during market hours only.
@@ -678,24 +689,23 @@ async def close_position(symbol: str):
     if not bot_state.fetcher.connected:
         raise HTTPException(status_code=503, detail="IB not connected — cannot place sell order")
 
-    # ── Fetch a live price first (used as fallback if fill confirmation times out) ──
-    try:
-        loop = asyncio.get_running_loop()
-        resolved_price = await asyncio.wait_for(
-            loop.run_in_executor(None, bot_state.fetcher.fetch_current_price, symbol),
-            timeout=10.0
+    # ── Guard: Market must be open ───────────────────────────────────────────
+    # IB queues orders submitted outside market hours — _wait_for_fill would
+    # time out and the order would remain pending to fill at the next open.
+    if not _is_market_open():
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                "Market is closed — orders cannot be placed outside market hours "
+                "(Mon-Fri 9:30am–4:00pm ET). Please retry when the market is open."
+            )
         )
-    except asyncio.TimeoutError:
-        raise HTTPException(status_code=503, detail=f"IB price fetch timed out for {symbol} — please retry")
-    except Exception as e:
-        raise HTTPException(status_code=503, detail=f"Could not fetch live price for {symbol}: {e}")
-    if not resolved_price:
-        raise HTTPException(status_code=503, detail=f"IB returned no price for {symbol} — please retry")
 
     # ── Place market SELL order via IB ───────────────────────────────────────
     # place_market_order internally waits up to 60s for fill confirmation.
     # Paper vs live is determined by IB_PORT in .env — same call for both.
     quantity = int(position['quantity'])
+    loop = asyncio.get_running_loop()
     try:
         ib_order = await asyncio.wait_for(
             loop.run_in_executor(
@@ -710,13 +720,35 @@ async def close_position(symbol: str):
     if ib_order is None:
         raise HTTPException(status_code=503, detail=f"IB sell order failed for {symbol} — position NOT closed, please retry")
 
-    # ── Use confirmed fill price; fall back to resolved price ────────────────
+    # ── Check fill result ─────────────────────────────────────────────────────
     raw_fill = ib_order.get("avg_fill_price") or 0.0
-    filled_exit_price = float(raw_fill) if (raw_fill and raw_fill > 0) else resolved_price
-    if not filled_exit_price or filled_exit_price <= 0:
-        filled_exit_price = resolved_price  # last resort
+    ib_order_id = ib_order.get("order_id")
 
-    # ── Calculate P&L with actual fill price ─────────────────────────────────
+    if not raw_fill or float(raw_fill) <= 0.0:
+        # Fill timed out (avg_fill_price == 0.0). The IB order is still pending
+        # and would execute at the next market open — cancel it immediately.
+        logger.warning(
+            f"⚠️ [{symbol}] Fill not confirmed within 60s "
+            f"— attempting to cancel IB order {ib_order_id}"
+        )
+        cancelled = await loop.run_in_executor(
+            None,
+            lambda oid=ib_order_id: bot_state.fetcher.cancel_order(oid)
+        )
+        cancel_msg = "Order has been cancelled." if cancelled else \
+                     "WARNING: Order cancel may have failed — check IB terminal."
+        raise HTTPException(
+            status_code=503,
+            detail=(
+                f"Sell order placed but fill not confirmed within 60s. "
+                f"{cancel_msg} Position NOT closed. Please retry."
+            )
+        )
+
+    # ── Confirmed fill — proceed to close ────────────────────────────────────
+    filled_exit_price = float(raw_fill)
+
+    # ── Calculate P&L with actual IB fill price ───────────────────────────────
     cost_basis      = float(position['cost_basis'])
     actual_proceeds = round(filled_exit_price * quantity, 2)
     actual_pnl      = round(actual_proceeds - cost_basis, 2)

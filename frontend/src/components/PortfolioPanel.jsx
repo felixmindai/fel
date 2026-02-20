@@ -97,7 +97,13 @@ function PortfolioPanel({ positions, config, onRefresh, onStatusRefresh }) {
       const data = await response.json();
 
       if (!response.ok) {
-        alert(`❌ Failed to close ${symbol}: ${data.detail || response.statusText}`);
+        if (response.status === 400) {
+          // 400 = market closed or other user-correctable condition (retry later)
+          alert(`⏰ Cannot close ${symbol}:\n\n${data.detail || response.statusText}`);
+        } else {
+          // 503 = fill timeout (order cancelled), IB disconnected, or other server error
+          alert(`❌ Failed to close ${symbol}:\n\n${data.detail || response.statusText}`);
+        }
         return;
       }
       if (data.success) {
