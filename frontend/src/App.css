@@ -124,6 +124,15 @@
   background: #b91c1c;
 }
 
+/* Disabled state — applies to all .btn variants */
+.btn:disabled,
+.btn[disabled] {
+  opacity: 0.38;
+  cursor: not-allowed;
+  filter: grayscale(60%);
+  pointer-events: none;
+}
+
 .tab-nav {
   display: flex;
   gap: 0.5rem;

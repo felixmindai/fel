@@ -270,16 +270,16 @@ function PortfolioPanel({ positions, config, onRefresh, onStatusRefresh, isMarke
                       ? 'Market is closed — available Mon-Fri 9:30am–4:00pm ET'
                       : `Sell ${pos.quantity} shares at market price via IB`}
                   >
-                    Close
+                    Sell
                   </button>
-                  {/* ⋯ — DB-only mark-closed, for when position is already gone in IB */}
+                  {/* DB-only status sync — for when position is already closed in IB */}
                   <button
                     className="btn btn-secondary"
-                    style={{ padding: '0.25rem 0.5rem', fontSize: '0.8rem', opacity: 0.65 }}
+                    style={{ padding: '0.25rem 0.5rem', fontSize: '0.75rem', opacity: 0.65 }}
                     onClick={() => handleMarkClosed(pos.symbol, pos.entry_price)}
-                    title="Already closed in IB? Update DB status without placing an order"
+                    title="Sync DB: mark this position as sold without placing an IB order"
                   >
-                    ⋯
+                    Change Status to Sold
                   </button>
                 </td>
               </tr>

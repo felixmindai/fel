@@ -1038,11 +1038,11 @@ async def websocket_endpoint(websocket: WebSocket):
                         await websocket.send_text(fallback)
                     except:
                         break  # Connection dead, exit loop
-                except (ConnectionError, ConnectionAbortedError, ConnectionResetError) as conn_err:
-                    logger.debug(f"WebSocket connection error (client likely disconnected): {conn_err}")
-                    break  # Exit loop cleanly
+                except (WebSocketDisconnect, ConnectionError, ConnectionAbortedError, ConnectionResetError):
+                    # Client disconnected cleanly — not an error, exit loop silently
+                    break
                 except Exception as send_err:
-                    logger.error(f"Unexpected error sending WebSocket message: {send_err}")
+                    logger.error(f"Unexpected error sending WebSocket message: {send_err!r}", exc_info=True)
                     break
                 
             except Exception as e:
