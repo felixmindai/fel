@@ -512,6 +512,30 @@ class Database:
                 END $$;
             """)
 
+            # positions: carry ab_group from scan_results when a buy is executed
+            cursor.execute("""
+                DO $$ BEGIN
+                    IF NOT EXISTS (
+                        SELECT 1 FROM information_schema.columns
+                        WHERE table_name='positions' AND column_name='ab_group'
+                    ) THEN
+                        ALTER TABLE positions ADD COLUMN ab_group VARCHAR(1) DEFAULT NULL;
+                    END IF;
+                END $$;
+            """)
+
+            # trades: carry ab_group from positions when a trade is closed
+            cursor.execute("""
+                DO $$ BEGIN
+                    IF NOT EXISTS (
+                        SELECT 1 FROM information_schema.columns
+                        WHERE table_name='trades' AND column_name='ab_group'
+                    ) THEN
+                        ALTER TABLE trades ADD COLUMN ab_group VARCHAR(1) DEFAULT NULL;
+                    END IF;
+                END $$;
+            """)
+
             # Create indexes
             cursor.execute("CREATE INDEX IF NOT EXISTS idx_daily_bars_symbol ON daily_bars(symbol)")
             cursor.execute("CREATE INDEX IF NOT EXISTS idx_daily_bars_date ON daily_bars(date)")
@@ -967,8 +991,8 @@ class Database:
             cursor.execute("""
                 INSERT INTO positions (
                     symbol, entry_date, entry_price, submitted_price, quantity, stop_loss,
-                    cost_basis, max_price, max_gain_pct, status, trade_id, notes
-                ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                    cost_basis, max_price, max_gain_pct, status, trade_id, notes, ab_group
+                ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
                 ON CONFLICT (symbol) DO UPDATE SET
                     entry_price = EXCLUDED.entry_price,
                     submitted_price = EXCLUDED.submitted_price,
@@ -980,6 +1004,7 @@ class Database:
                     status = EXCLUDED.status,
                     trade_id = EXCLUDED.trade_id,
                     notes = EXCLUDED.notes,
+                    ab_group = EXCLUDED.ab_group,
                     last_updated = CURRENT_TIMESTAMP
             """, (
                 position['symbol'], position['entry_date'], position['entry_price'],
@@ -987,7 +1012,7 @@ class Database:
                 position['quantity'], position['stop_loss'], position['cost_basis'],
                 position.get('max_price', 0), position.get('max_gain_pct', 0),
                 position.get('status', 'OPEN'), position.get('trade_id'),
-                position.get('notes', '')
+                position.get('notes', ''), position.get('ab_group')
             ))
             
             conn.commit()
@@ -1072,6 +1097,7 @@ class Database:
                     exit_reason,
                     stop_loss,
                     status,
+                    ab_group,
                     created_at
                 FROM trades
                 WHERE status = 'CLOSED'
@@ -1233,13 +1259,14 @@ class Database:
         try:
             cursor.execute("""
                 INSERT INTO trades (
-                    symbol, entry_date, entry_price, submitted_price, quantity, cost_basis, status
-                ) VALUES (%s, %s, %s, %s, %s, %s, 'OPEN')
+                    symbol, entry_date, entry_price, submitted_price, quantity, cost_basis, status, ab_group
+                ) VALUES (%s, %s, %s, %s, %s, %s, 'OPEN', %s)
                 RETURNING id
             """, (
                 trade['symbol'], trade['entry_date'], trade['entry_price'],
                 trade.get('submitted_price'),
-                trade['quantity'], trade['cost_basis']
+                trade['quantity'], trade['cost_basis'],
+                trade.get('ab_group')
             ))
             
             trade_id = cursor.fetchone()[0]

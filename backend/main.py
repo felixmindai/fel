@@ -1002,6 +1002,8 @@ async def update_config(config: ConfigUpdate):
         'trend_break_exit_enabled': config.trend_break_exit_enabled if config.trend_break_exit_enabled is not None else current_config.get('trend_break_exit_enabled', True),
         'limit_order_premium_pct': config.limit_order_premium_pct if config.limit_order_premium_pct is not None else current_config.get('limit_order_premium_pct', 1.0),
         'scanner_interval_seconds': max(5, config.scanner_interval_seconds) if config.scanner_interval_seconds is not None else current_config.get('scanner_interval_seconds', 30),
+        'eod_order_execution_time': config.eod_order_execution_time if config.eod_order_execution_time is not None else current_config.get('eod_order_execution_time', '15:50'),
+        'ab_test_enabled': config.ab_test_enabled if config.ab_test_enabled is not None else current_config.get('ab_test_enabled', False),
     }
     
     success = bot_state.db.update_config(updated_config)

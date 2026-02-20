@@ -306,6 +306,7 @@ async def execute_pending_buys(bot_state) -> list:
                 )
             actual_cost_basis = round(filled_price * quantity, 2)
 
+            ab_group = result.get("ab_group")
             trade = {
                 "symbol": symbol,
                 "entry_date": entry_date,
@@ -313,6 +314,7 @@ async def execute_pending_buys(bot_state) -> list:
                 "submitted_price": submitted_price, # what we asked IB to fill at
                 "quantity": quantity,
                 "cost_basis": actual_cost_basis,
+                "ab_group": ab_group,
             }
             trade_id = db.create_trade(trade)
             if trade_id is None:
@@ -328,6 +330,7 @@ async def execute_pending_buys(bot_state) -> list:
                 "stop_loss": round(filled_price * (1 - stop_loss_pct / 100), 4),
                 "cost_basis": actual_cost_basis,
                 "trade_id": trade_id,
+                "ab_group": ab_group,
             }
             if not db.save_position(pos):
                 logger.error(f"Failed to save position for {symbol}")
@@ -479,6 +482,7 @@ async def execute_eod_buys(bot_state) -> list:
             actual_cost_basis = round(filled_price * quantity, 2)
             stop_loss_price = round(filled_price * (1 - stop_loss_pct / 100), 4)
 
+            ab_group = result.get("ab_group", "A")  # EOD candidates are always Group A
             trade = {
                 "symbol": symbol,
                 "entry_date": entry_date,
@@ -486,6 +490,7 @@ async def execute_eod_buys(bot_state) -> list:
                 "submitted_price": submitted_price,
                 "quantity": quantity,
                 "cost_basis": actual_cost_basis,
+                "ab_group": ab_group,
             }
             trade_id = db.create_trade(trade)
             if trade_id is None:
@@ -501,6 +506,7 @@ async def execute_eod_buys(bot_state) -> list:
                 "stop_loss": stop_loss_price,
                 "cost_basis": actual_cost_basis,
                 "trade_id": trade_id,
+                "ab_group": ab_group,
             }
             if not db.save_position(pos):
                 logger.error(f"🅰️ {symbol}: Failed to save position")

@@ -65,6 +65,9 @@ function ClosedPositionsPanel({ positions, onReopen }) {
   // Default: exit_date DESC (most recent first) — matches DB ORDER BY
   const [sortCol, setSortCol] = useState('exit_date');
   const [sortDir, setSortDir] = useState(DESC);
+  const [abFilter, setAbFilter] = useState(
+    () => localStorage.getItem('closedAbFilter') || 'all'
+  );
 
   function handleSort(col) {
     if (!SORTABLE.has(col)) return;
@@ -78,13 +81,23 @@ function ClosedPositionsPanel({ positions, onReopen }) {
     }
   }
 
-  const sorted = applySort(positions, sortCol, sortDir);
+  // A/B counts (from all positions, not filtered)
+  const groupACount = positions.filter(p => p.ab_group === 'A').length;
+  const groupBCount = positions.filter(p => p.ab_group === 'B').length;
 
-  // Summary totals
-  const totalPnl    = positions.reduce((sum, p) => sum + (Number(p.pnl) || 0), 0);
-  const totalWins   = positions.filter(p => (Number(p.pnl) || 0) > 0).length;
-  const totalLosses = positions.filter(p => (Number(p.pnl) || 0) < 0).length;
-  const winRate     = positions.length ? ((totalWins / positions.length) * 100).toFixed(0) : 0;
+  // Filter by A/B group then sort
+  const filtered = positions.filter(pos => {
+    if (abFilter === 'A') return pos.ab_group === 'A';
+    if (abFilter === 'B') return pos.ab_group === 'B';
+    return true;
+  });
+  const sorted = applySort(filtered, sortCol, sortDir);
+
+  // Summary totals (from filtered set)
+  const totalPnl    = filtered.reduce((sum, p) => sum + (Number(p.pnl) || 0), 0);
+  const totalWins   = filtered.filter(p => (Number(p.pnl) || 0) > 0).length;
+  const totalLosses = filtered.filter(p => (Number(p.pnl) || 0) < 0).length;
+  const winRate     = filtered.length ? ((totalWins / filtered.length) * 100).toFixed(0) : 0;
   const pnlColor    = totalPnl >= 0 ? '#10b981' : '#ef4444';
 
   const handleMarkAsOpen = async (tradeId, symbol) => {
@@ -130,14 +143,26 @@ function ClosedPositionsPanel({ positions, onReopen }) {
       <div style={{ marginBottom: '0.75rem', display: 'flex', gap: '1.5rem', alignItems: 'center', flexWrap: 'wrap' }}>
         <h2 style={{ fontSize: '1rem', margin: 0 }}>Closed Positions</h2>
 
+        <select
+          value={abFilter}
+          onChange={e => { setAbFilter(e.target.value); localStorage.setItem('closedAbFilter', e.target.value); }}
+          style={{ fontSize: '0.82rem', padding: '0.2rem 0.4rem', borderRadius: '4px', border: '1px solid #374151', background: '#1f2937', color: '#f9fafb', cursor: 'pointer' }}
+        >
+          <option value="all">A/B All ({positions.length})</option>
+          <option value="A">Group A ({groupACount})</option>
+          <option value="B">Group B ({groupBCount})</option>
+        </select>
+
         {positions.length > 0 && (
           <>
             <span style={{ fontSize: '0.82rem', color: '#9ca3af' }}>
-              {positions.length} trade{positions.length !== 1 ? 's' : ''}
+              {filtered.length !== positions.length
+                ? `${filtered.length} of ${positions.length} trade${positions.length !== 1 ? 's' : ''}`
+                : `${positions.length} trade${positions.length !== 1 ? 's' : ''}`}
             </span>
             <span style={{ fontSize: '0.82rem', color: '#9ca3af' }}>
               {totalWins}W / {totalLosses}L
-              {positions.length > 0 && ` (${winRate}% win rate)`}
+              {filtered.length > 0 && ` (${winRate}% win rate)`}
             </span>
             <span style={{ fontSize: '0.88rem', fontWeight: '600', color: pnlColor }}>
               Realized P&amp;L: {fmt$(totalPnl)}
@@ -150,6 +175,10 @@ function ClosedPositionsPanel({ positions, onReopen }) {
       {positions.length === 0 ? (
         <div style={{ textAlign: 'center', padding: '3rem', color: '#6b7280' }}>
           No closed positions yet.
+        </div>
+      ) : filtered.length === 0 ? (
+        <div style={{ textAlign: 'center', padding: '3rem', color: '#6b7280' }}>
+          No closed positions match the selected filter.
         </div>
       ) : (
         <table>
@@ -215,7 +244,7 @@ function ClosedPositionsPanel({ positions, onReopen }) {
           <tfoot>
             <tr style={{ borderTop: '2px solid #374151', fontWeight: '600' }}>
               <td colSpan={8} style={{ paddingTop: '0.5rem', color: '#9ca3af', fontSize: '0.82rem' }}>
-                Total ({positions.length} trades · {totalWins}W / {totalLosses}L · {winRate}% win rate)
+                Total ({filtered.length} trade{filtered.length !== 1 ? 's' : ''} · {totalWins}W / {totalLosses}L · {winRate}% win rate)
               </td>
               <td style={{ ...R, color: pnlColor, paddingTop: '0.5rem' }}>{fmt$(totalPnl)}</td>
               <td colSpan={3} />

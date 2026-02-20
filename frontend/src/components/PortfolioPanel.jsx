@@ -71,6 +71,9 @@ function PortfolioPanel({ positions, config, onRefresh, onStatusRefresh, isMarke
   const [filter, setFilter]   = useState(
     () => localStorage.getItem('portfolioFilter') || 'all'
   );
+  const [abFilter, setAbFilter] = useState(
+    () => localStorage.getItem('portfolioAbFilter') || 'all'
+  );
 
   function handleSort(col) {
     if (!SORTABLE.has(col)) return;
@@ -207,11 +210,15 @@ function PortfolioPanel({ positions, config, onRefresh, onStatusRefresh, isMarke
 
   const sellCount    = positionsWithStatus.filter(p => p._pendingExit || p._sellQual).length;
   const holdingCount = positionsWithStatus.filter(p => !p._pendingExit && !p._sellQual).length;
+  const groupACount  = positionsWithStatus.filter(p => p.ab_group === 'A').length;
+  const groupBCount  = positionsWithStatus.filter(p => p.ab_group === 'B').length;
 
   const filteredPositions = positionsWithStatus.filter(pos => {
-    if (filter === 'sell')    return pos._pendingExit || pos._sellQual;
-    if (filter === 'holding') return !pos._pendingExit && !pos._sellQual;
-    return true; // 'all'
+    if (filter === 'sell'    && !(pos._pendingExit || pos._sellQual)) return false;
+    if (filter === 'holding' &&  (pos._pendingExit || pos._sellQual)) return false;
+    if (abFilter === 'A' && pos.ab_group !== 'A') return false;
+    if (abFilter === 'B' && pos.ab_group !== 'B') return false;
+    return true;
   });
 
   // ── Summary totals ──────────────────────────────────────────────────────
@@ -237,6 +244,15 @@ function PortfolioPanel({ positions, config, onRefresh, onStatusRefresh, isMarke
           <option value="all">All Positions ({positions.length})</option>
           <option value="sell">Sell at Open ({sellCount})</option>
           <option value="holding">Holding ({holdingCount})</option>
+        </select>
+        <select
+          value={abFilter}
+          onChange={e => { setAbFilter(e.target.value); localStorage.setItem('portfolioAbFilter', e.target.value); }}
+          style={{ fontSize: '0.82rem', padding: '0.2rem 0.4rem', borderRadius: '4px', border: '1px solid #374151', background: '#1f2937', color: '#f9fafb', cursor: 'pointer' }}
+        >
+          <option value="all">A/B All ({positions.length})</option>
+          <option value="A">Group A ({groupACount})</option>
+          <option value="B">Group B ({groupBCount})</option>
         </select>
         {positions.length > 0 && (
           <>
