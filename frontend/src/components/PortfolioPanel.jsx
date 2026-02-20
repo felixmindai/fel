@@ -54,7 +54,7 @@ function applySort(rows, col, dir) {
 }
 // ──────────────────────────────────────────────────────────────────────────
 
-function PortfolioPanel({ positions, config, onRefresh, onStatusRefresh }) {
+function PortfolioPanel({ positions, config, onRefresh, onStatusRefresh, isMarketOpen }) {
   const [sortCol, setSortCol] = useState(null);
   const [sortDir, setSortDir] = useState(null);
 
@@ -97,13 +97,7 @@ function PortfolioPanel({ positions, config, onRefresh, onStatusRefresh }) {
       const data = await response.json();
 
       if (!response.ok) {
-        if (response.status === 400) {
-          // 400 = market closed or other user-correctable condition (retry later)
-          alert(`⏰ Cannot close ${symbol}:\n\n${data.detail || response.statusText}`);
-        } else {
-          // 503 = fill timeout (order cancelled), IB disconnected, or other server error
-          alert(`❌ Failed to close ${symbol}:\n\n${data.detail || response.statusText}`);
-        }
+        alert(`❌ Failed to close ${symbol}:\n\n${data.detail || response.statusText}`);
         return;
       }
       if (data.success) {
@@ -119,6 +113,44 @@ function PortfolioPanel({ positions, config, onRefresh, onStatusRefresh }) {
       }
     } catch (error) {
       alert('❌ Error closing position: ' + error.message);
+    }
+  };
+
+  const handleMarkClosed = async (symbol, entryPrice) => {
+    const input = window.prompt(
+      `Mark ${symbol} as closed in DB (no IB order).\n\nEnter the exit price, or leave as-is to use the entry price:`,
+      entryPrice != null ? Number(entryPrice).toFixed(2) : ''
+    );
+    if (input === null) return; // cancelled
+
+    const exitPrice = parseFloat(input);
+    if (isNaN(exitPrice) || exitPrice <= 0) {
+      alert('❌ Invalid price — please enter a positive number.');
+      return;
+    }
+
+    try {
+      const response = await fetch(
+        `${API_BASE}/positions/${symbol}/mark-closed?exit_price=${exitPrice}`,
+        { method: 'PATCH' }
+      );
+      const data = await response.json();
+      if (!response.ok) {
+        alert(`❌ Failed to mark ${symbol} closed:\n\n${data.detail || response.statusText}`);
+        return;
+      }
+      if (data.success) {
+        alert(
+          `✅ ${symbol} marked as closed in DB\n` +
+          `Exit Price: $${data.exit_price.toFixed(2)}\n` +
+          `P&L: $${data.pnl.toFixed(2)} (${data.pnl_pct.toFixed(2)}%)\n` +
+          `(No IB order was placed)`
+        );
+        onRefresh();
+        onStatusRefresh?.();
+      }
+    } catch (error) {
+      alert('❌ Error: ' + error.message);
     }
   };
 
@@ -212,13 +244,27 @@ function PortfolioPanel({ positions, config, onRefresh, onStatusRefresh }) {
                     <span style={{ color: '#10b981', fontSize: '0.85rem' }}>✅ Holding</span>
                   )}
                 </td>
-                <td>
+                <td style={{ whiteSpace: 'nowrap' }}>
+                  {/* Close — places real IB SELL order, disabled when market is closed */}
                   <button
                     className="btn btn-danger"
-                    style={{ padding: '0.25rem 0.75rem', fontSize: '0.8rem' }}
+                    style={{ padding: '0.25rem 0.75rem', fontSize: '0.8rem', marginRight: '0.4rem' }}
                     onClick={() => handleClosePosition(pos.symbol, pos.quantity)}
+                    disabled={!isMarketOpen}
+                    title={!isMarketOpen
+                      ? 'Market is closed — available Mon-Fri 9:30am–4:00pm ET'
+                      : `Sell ${pos.quantity} shares at market price via IB`}
                   >
                     Close
+                  </button>
+                  {/* ⋯ — DB-only mark-closed, for when position is already gone in IB */}
+                  <button
+                    className="btn btn-secondary"
+                    style={{ padding: '0.25rem 0.5rem', fontSize: '0.8rem', opacity: 0.65 }}
+                    onClick={() => handleMarkClosed(pos.symbol, pos.entry_price)}
+                    title="Already closed in IB? Update DB status without placing an order"
+                  >
+                    ⋯
                   </button>
                 </td>
               </tr>

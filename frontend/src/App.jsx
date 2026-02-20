@@ -367,6 +367,9 @@ function App() {
     r => r.qualified && !r.in_portfolio && !openPositionSymbols.has(r.symbol)
   ).length;
 
+  // Compute once per render — used to disable the Close button in PortfolioPanel
+  const isMarketOpen = _getMarketStatus().open;
+
   // ── Reusable status indicator: coloured dot + "Label: Value" ─────────────
   const StatusDot = ({ color, label, value }) => (
     <span className={`status-indicator ${color}`}>
@@ -495,6 +498,7 @@ function App() {
             config={config}
             onRefresh={fetchPositions}
             onStatusRefresh={fetchStatus}
+            isMarketOpen={isMarketOpen}
           />
         )}
         {activeTab === 'tickers' && (

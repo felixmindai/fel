@@ -800,6 +800,60 @@ async def close_position(symbol: str):
         "mode": mode
     }
 
+
+@app.patch("/api/positions/{symbol}/mark-closed")
+async def mark_position_closed(symbol: str, exit_price: float):
+    """
+    Manually mark a position as closed in the DB without placing an IB order.
+    Used when a position was already closed in IB (manually sold, expired, etc.)
+    but the bot DB still shows it as OPEN. No market hours restriction.
+    """
+    positions = bot_state.db.get_positions()
+    position = next((p for p in positions if p['symbol'] == symbol), None)
+    if not position:
+        raise HTTPException(status_code=404, detail="Position not found")
+
+    quantity   = int(position['quantity'])
+    cost_basis = float(position['cost_basis'])
+    proceeds   = round(exit_price * quantity, 2)
+    pnl        = round(proceeds - cost_basis, 2)
+    pnl_pct    = round((pnl / cost_basis) * 100, 4) if cost_basis else 0
+
+    bot_state.db.close_trade(
+        position['trade_id'],
+        datetime.now(ET).date(),
+        exit_price,
+        proceeds,
+        pnl,
+        pnl_pct,
+        'MANUAL_MARK_CLOSED'
+    )
+    bot_state.db.close_position(symbol)
+    bot_state.db.update_scan_result_portfolio_flag(symbol, False)
+
+    config = bot_state.db.get_config()
+    mode = "PAPER" if bool(config.get('paper_trading', True)) else "LIVE"
+
+    logger.info(
+        f"📋 [{mode}] Manually marked {symbol} as CLOSED @ ${exit_price:.2f} "
+        f"| P&L: ${pnl:.2f} ({pnl_pct:.2f}%) — no IB order placed"
+    )
+
+    await broadcast_message({
+        'type': 'orders_executed',
+        'timestamp': datetime.now().isoformat(),
+        'buys': 0, 'exits': 1,
+        'source': 'mark_closed', 'symbol': symbol
+    })
+
+    return {
+        "success": True,
+        "exit_price": exit_price,
+        "pnl": pnl,
+        "pnl_pct": pnl_pct
+    }
+
+
 # ============================================================================
 # TRADE HISTORY
 # ============================================================================
