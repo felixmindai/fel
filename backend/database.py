@@ -795,10 +795,12 @@ class Database:
                     criteria_6_above_30pct_52w_low,
                     criteria_7_breakout_volume,
                     criteria_8_spy_above_50ma,
-                    qualified, action, in_portfolio
+                    qualified, action, in_portfolio,
+                    ab_group, eod_buy_pending, sod_skip_reason
                 ) VALUES (
                     %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s,
-                    %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s
+                    %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s,
+                    %s, %s, %s
                 )
                 ON CONFLICT (scan_date, symbol)
                 DO UPDATE SET
@@ -822,6 +824,9 @@ class Database:
                     qualified = EXCLUDED.qualified,
                     action = EXCLUDED.action,
                     in_portfolio = EXCLUDED.in_portfolio,
+                    ab_group = EXCLUDED.ab_group,
+                    eod_buy_pending = EXCLUDED.eod_buy_pending,
+                    sod_skip_reason = EXCLUDED.sod_skip_reason,
                     created_at = CURRENT_TIMESTAMP
             """, (
                 result['scan_date'], result['symbol'], result['price'],
@@ -832,7 +837,10 @@ class Database:
                 result['criteria_4'], result['criteria_5'], result['criteria_6'],
                 result['criteria_7'], result['criteria_8'],
                 result['qualified'], result['action'],
-                result.get('in_portfolio', False)
+                result.get('in_portfolio', False),
+                result.get('ab_group'),
+                result.get('eod_buy_pending', False),
+                result.get('sod_skip_reason'),
             ))
             
             conn.commit()
