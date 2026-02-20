@@ -549,7 +549,7 @@ function App() {
           <PortfolioPanel
             positions={positions}
             config={config}
-            onRefresh={() => { fetchPositions(); fetchClosedPositions(); }}
+            onRefresh={() => { fetchPositions(); fetchClosedPositions(); fetchScanResults(); }}
             onStatusRefresh={fetchStatus}
             isMarketOpen={isMarketOpen}
           />

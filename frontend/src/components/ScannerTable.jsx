@@ -127,7 +127,7 @@ function ScannerTable({ results, onRefresh, onOverrideToggle, onEntryMethodChang
         >
           <option value="all">All Tickers ({totalCount})</option>
           <option value="qualified">Qualified Only ({qualifiedCount})</option>
-          <option value="portfolio">In Portfolio ({portfolioCount})</option>
+          <option value="portfolio">In Position ({portfolioCount})</option>
           <option value="failed">Failed Only ({failedCount})</option>
         </select>
         <select
@@ -184,7 +184,7 @@ function ScannerTable({ results, onRefresh, onOverrideToggle, onEntryMethodChang
                       padding: '1px 5px',
                       fontWeight: '600',
                       whiteSpace: 'nowrap'
-                    }}>✅ In Portfolio</span>
+                    }}>✅ In Position</span>
                   )}
                 </td>
                 <td style={R}>{fmt$(r.price)}</td>
