@@ -438,6 +438,80 @@ class Database:
                 END $$;
             """)
 
+            # ── A/B test migrations ──────────────────────────────────────────────
+
+            # bot_config: EOD execution time
+            cursor.execute("""
+                DO $$ BEGIN
+                    IF NOT EXISTS (
+                        SELECT 1 FROM information_schema.columns
+                        WHERE table_name='bot_config' AND column_name='eod_order_execution_time'
+                    ) THEN
+                        ALTER TABLE bot_config ADD COLUMN eod_order_execution_time VARCHAR(5) DEFAULT '15:50';
+                    END IF;
+                END $$;
+            """)
+
+            # bot_config: A/B test enabled flag
+            cursor.execute("""
+                DO $$ BEGIN
+                    IF NOT EXISTS (
+                        SELECT 1 FROM information_schema.columns
+                        WHERE table_name='bot_config' AND column_name='ab_test_enabled'
+                    ) THEN
+                        ALTER TABLE bot_config ADD COLUMN ab_test_enabled BOOLEAN DEFAULT false;
+                    END IF;
+                END $$;
+            """)
+
+            # bot_config: global round-robin counter for A/B assignment
+            cursor.execute("""
+                DO $$ BEGIN
+                    IF NOT EXISTS (
+                        SELECT 1 FROM information_schema.columns
+                        WHERE table_name='bot_config' AND column_name='ab_counter'
+                    ) THEN
+                        ALTER TABLE bot_config ADD COLUMN ab_counter INTEGER DEFAULT 0;
+                    END IF;
+                END $$;
+            """)
+
+            # scan_results: which A/B group this candidate was assigned to
+            cursor.execute("""
+                DO $$ BEGIN
+                    IF NOT EXISTS (
+                        SELECT 1 FROM information_schema.columns
+                        WHERE table_name='scan_results' AND column_name='ab_group'
+                    ) THEN
+                        ALTER TABLE scan_results ADD COLUMN ab_group VARCHAR(1) DEFAULT NULL;
+                    END IF;
+                END $$;
+            """)
+
+            # scan_results: EOD buy pending flag for Group A candidates
+            cursor.execute("""
+                DO $$ BEGIN
+                    IF NOT EXISTS (
+                        SELECT 1 FROM information_schema.columns
+                        WHERE table_name='scan_results' AND column_name='eod_buy_pending'
+                    ) THEN
+                        ALTER TABLE scan_results ADD COLUMN eod_buy_pending BOOLEAN DEFAULT false;
+                    END IF;
+                END $$;
+            """)
+
+            # scan_results: why Group B was skipped at SOD re-verify
+            cursor.execute("""
+                DO $$ BEGIN
+                    IF NOT EXISTS (
+                        SELECT 1 FROM information_schema.columns
+                        WHERE table_name='scan_results' AND column_name='sod_skip_reason'
+                    ) THEN
+                        ALTER TABLE scan_results ADD COLUMN sod_skip_reason VARCHAR(100) DEFAULT NULL;
+                    END IF;
+                END $$;
+            """)
+
             # Create indexes
             cursor.execute("CREATE INDEX IF NOT EXISTS idx_daily_bars_symbol ON daily_bars(symbol)")
             cursor.execute("CREATE INDEX IF NOT EXISTS idx_daily_bars_date ON daily_bars(date)")
@@ -1261,22 +1335,24 @@ class Database:
         try:
             cursor.execute("""
                 UPDATE bot_config
-                SET stop_loss_pct              = %s,
-                    max_positions              = %s,
-                    position_size_usd          = %s,
-                    paper_trading              = %s,
-                    auto_execute               = %s,
-                    default_entry_method       = %s,
-                    data_update_time           = %s,
-                    order_execution_time       = %s,
-                    near_52wh_pct              = %s,
-                    above_52wl_pct             = %s,
-                    volume_multiplier          = %s,
-                    spy_filter_enabled         = %s,
-                    trend_break_exit_enabled   = %s,
-                    limit_order_premium_pct    = %s,
-                    scanner_interval_seconds   = %s,
-                    updated_at                 = CURRENT_TIMESTAMP
+                SET stop_loss_pct                = %s,
+                    max_positions                = %s,
+                    position_size_usd            = %s,
+                    paper_trading                = %s,
+                    auto_execute                 = %s,
+                    default_entry_method         = %s,
+                    data_update_time             = %s,
+                    order_execution_time         = %s,
+                    near_52wh_pct                = %s,
+                    above_52wl_pct               = %s,
+                    volume_multiplier            = %s,
+                    spy_filter_enabled           = %s,
+                    trend_break_exit_enabled     = %s,
+                    limit_order_premium_pct      = %s,
+                    scanner_interval_seconds     = %s,
+                    eod_order_execution_time     = %s,
+                    ab_test_enabled              = %s,
+                    updated_at                   = CURRENT_TIMESTAMP
                 WHERE id = 1
             """, (
                 config.get('stop_loss_pct'),
@@ -1294,6 +1370,8 @@ class Database:
                 config.get('trend_break_exit_enabled', True),
                 config.get('limit_order_premium_pct', 1.0),
                 config.get('scanner_interval_seconds', 30),
+                config.get('eod_order_execution_time', '15:50'),
+                config.get('ab_test_enabled', False),
             ))
             
             conn.commit()
@@ -1308,6 +1386,143 @@ class Database:
             cursor.close()
             conn.close()
     
+    # ==================== A/B TEST HELPERS ====================
+
+    def increment_ab_counter(self) -> int:
+        """Atomically increment the global A/B round-robin counter and return the new value."""
+        conn = self.get_connection()
+        cursor = conn.cursor()
+        try:
+            cursor.execute("""
+                UPDATE bot_config
+                SET ab_counter = ab_counter + 1
+                WHERE id = 1
+                RETURNING ab_counter
+            """)
+            row = cursor.fetchone()
+            conn.commit()
+            return row[0] if row else 1
+        except Exception as e:
+            conn.rollback()
+            logger.error(f"❌ Error incrementing ab_counter: {e}")
+            return 1
+        finally:
+            cursor.close()
+            conn.close()
+
+    def get_eod_buy_candidates(self) -> List[Dict]:
+        """Return scan_results rows flagged for EOD buy (Group A, pending execution)."""
+        conn = self.get_connection()
+        cursor = conn.cursor(cursor_factory=RealDictCursor)
+        try:
+            cursor.execute("""
+                SELECT * FROM scan_results
+                WHERE eod_buy_pending = true AND ab_group = 'A' AND qualified = true
+                ORDER BY created_at
+            """)
+            return [dict(row) for row in cursor.fetchall()]
+        finally:
+            cursor.close()
+            conn.close()
+
+    def get_sod_group_b_candidates(self, scan_date) -> List[Dict]:
+        """Return Group B candidates from a given scan_date for SOD re-verification."""
+        conn = self.get_connection()
+        cursor = conn.cursor(cursor_factory=RealDictCursor)
+        try:
+            cursor.execute("""
+                SELECT * FROM scan_results
+                WHERE ab_group = 'B'
+                  AND scan_date = %s
+                  AND qualified = true
+                  AND sod_skip_reason IS NULL
+                ORDER BY created_at
+            """, (scan_date,))
+            return [dict(row) for row in cursor.fetchall()]
+        finally:
+            cursor.close()
+            conn.close()
+
+    def mark_eod_buy_pending(self, symbol: str, scan_date, ab_group: str) -> bool:
+        """Flag a scan_results row as pending EOD buy and set its A/B group."""
+        conn = self.get_connection()
+        cursor = conn.cursor()
+        try:
+            cursor.execute("""
+                UPDATE scan_results
+                SET eod_buy_pending = true, ab_group = %s
+                WHERE symbol = %s AND scan_date = %s
+            """, (ab_group, symbol.upper(), scan_date))
+            conn.commit()
+            return cursor.rowcount > 0
+        except Exception as e:
+            conn.rollback()
+            logger.error(f"❌ Error marking eod_buy_pending for {symbol}: {e}")
+            return False
+        finally:
+            cursor.close()
+            conn.close()
+
+    def clear_eod_buy_pending(self, symbol: str, scan_date) -> bool:
+        """Clear the eod_buy_pending flag after a Group A buy has been executed."""
+        conn = self.get_connection()
+        cursor = conn.cursor()
+        try:
+            cursor.execute("""
+                UPDATE scan_results
+                SET eod_buy_pending = false
+                WHERE symbol = %s AND scan_date = %s
+            """, (symbol.upper(), scan_date))
+            conn.commit()
+            return cursor.rowcount > 0
+        except Exception as e:
+            conn.rollback()
+            logger.error(f"❌ Error clearing eod_buy_pending for {symbol}: {e}")
+            return False
+        finally:
+            cursor.close()
+            conn.close()
+
+    def mark_sod_skip(self, symbol: str, scan_date, reason: str) -> bool:
+        """Record why a Group B candidate was skipped at SOD re-verification."""
+        conn = self.get_connection()
+        cursor = conn.cursor()
+        try:
+            cursor.execute("""
+                UPDATE scan_results
+                SET sod_skip_reason = %s
+                WHERE symbol = %s AND scan_date = %s
+            """, (reason, symbol.upper(), scan_date))
+            conn.commit()
+            return cursor.rowcount > 0
+        except Exception as e:
+            conn.rollback()
+            logger.error(f"❌ Error marking sod_skip for {symbol}: {e}")
+            return False
+        finally:
+            cursor.close()
+            conn.close()
+
+    def set_ab_group(self, symbol: str, scan_date, ab_group: str) -> bool:
+        """Set the A/B group on a scan_results row (used by scanner after group assignment)."""
+        conn = self.get_connection()
+        cursor = conn.cursor()
+        try:
+            cursor.execute("""
+                UPDATE scan_results
+                SET ab_group = %s
+                WHERE symbol = %s AND scan_date = %s
+            """, (ab_group, symbol.upper(), scan_date))
+            conn.commit()
+            return cursor.rowcount > 0
+        except Exception as e:
+            conn.rollback()
+            logger.error(f"❌ Error setting ab_group for {symbol}: {e}")
+            return False
+        finally:
+            cursor.close()
+            conn.close()
+
     def set_scanner_status(self, running: bool) -> bool:
         """Update scanner running status."""
         conn = self.get_connection()

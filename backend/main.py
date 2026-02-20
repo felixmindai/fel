@@ -30,7 +30,7 @@ except ImportError:
 from database import Database
 from data_fetcher import DataFetcher, AsyncDataFetcher
 from scanner import MinerviniScanner, PositionMonitor
-from data_updater import data_update_scheduler_loop, run_data_update, market_open_scheduler_loop
+from data_updater import data_update_scheduler_loop, run_data_update, market_open_scheduler_loop, eod_scheduler_loop
 from zoneinfo import ZoneInfo
 
 ET = ZoneInfo("America/New_York")  # all date logic uses ET, not machine local
@@ -116,6 +116,9 @@ class ConfigUpdate(BaseModel):
     trend_break_exit_enabled: Optional[bool] = None
     # Scanner scheduler
     scanner_interval_seconds: Optional[int] = None
+    # A/B test
+    eod_order_execution_time: Optional[str] = None
+    ab_test_enabled: Optional[bool] = None
 
 class PositionCreate(BaseModel):
     symbol: str
@@ -374,9 +377,14 @@ async def startup():
         data_update_scheduler_loop(bot_state)
     )
 
-    # Start the market-open order execution scheduler
+    # Start the SOD (market-open) order execution scheduler
     bot_state.market_open_task = asyncio.create_task(
         market_open_scheduler_loop(bot_state)
+    )
+
+    # Start the EOD buy scheduler (Group A in A/B test — no-ops when ab_test_enabled=false)
+    bot_state.eod_task = asyncio.create_task(
+        eod_scheduler_loop(bot_state)
     )
 
     # Auto-start the scanner — always runs unless manually stopped via Settings

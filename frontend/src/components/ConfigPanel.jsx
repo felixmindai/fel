@@ -112,6 +112,8 @@ function ConfigPanel({ config, onUpdate, status, dataUpdateStatus, onUpdateDataN
     scanner_interval_seconds: '',
     // Execute schedule
     order_execution_time: '',
+    eod_order_execution_time: '',
+    ab_test_enabled: false,
     auto_execute: false,
     paper_trading: true,
   });
@@ -132,6 +134,8 @@ function ConfigPanel({ config, onUpdate, status, dataUpdateStatus, onUpdateDataN
         data_update_time: config.data_update_time ?? '',
         scanner_interval_seconds: config.scanner_interval_seconds ?? '',
         order_execution_time: config.order_execution_time ?? '',
+        eod_order_execution_time: config.eod_order_execution_time ?? '',
+        ab_test_enabled: config.ab_test_enabled === true,
         auto_execute: config.auto_execute === true,
         paper_trading: config.paper_trading !== false,
       });
@@ -323,14 +327,42 @@ function ConfigPanel({ config, onUpdate, status, dataUpdateStatus, onUpdateDataN
               <h3 style={GROUP_HEADER_STYLE}>⚡ Execute Schedule</h3>
 
               <div className="form-group">
-                <label>Order Execution Time (ET, 24h format)</label>
-                <input type="text" placeholder="09:30"
+                <label>SOD Order Execution Time (ET, 24h format) — Default: 09:45</label>
+                <input type="text" placeholder="09:45"
                   value={formData.order_execution_time}
                   onChange={(e) => set('order_execution_time', e.target.value)} />
                 <small style={HINT}>
-                  Time to place buy/sell orders. Weekdays only. Format: HH:MM (e.g. 09:30 = market open ET).
+                  Start-of-Day: time to place buy/sell orders. Weekdays only. Format: HH:MM.
+                  Group B re-verifies and buys here. Exits also run at this time.
                   Takes effect on the next scheduler cycle.
                 </small>
+              </div>
+
+              <div className="form-group">
+                <label>EOD Order Execution Time (ET, 24h format) — Default: 15:50</label>
+                <input type="text" placeholder="15:50"
+                  value={formData.eod_order_execution_time}
+                  onChange={(e) => set('eod_order_execution_time', e.target.value)} />
+                <small style={HINT}>
+                  End-of-Day: time to buy Group A candidates (A/B test only). Format: HH:MM.
+                  Only active when A/B Test Mode is ON. Takes effect on the next scheduler cycle.
+                </small>
+              </div>
+
+              <div className="form-group">
+                <div className="toggle">
+                  <input type="checkbox" id="ab_test_enabled"
+                    checked={formData.ab_test_enabled}
+                    onChange={(e) => set('ab_test_enabled', e.target.checked)} />
+                  <label htmlFor="ab_test_enabled">
+                    A/B Test Mode
+                    <br />
+                    <small style={{ color: '#6b7280' }}>
+                      When ON, qualified candidates alternate between Group A (buy EOD ~15:50) and
+                      Group B (re-verify + buy SOD ~09:45). Tracks which entry strategy performs better.
+                    </small>
+                  </label>
+                </div>
               </div>
 
               <div className="form-group">

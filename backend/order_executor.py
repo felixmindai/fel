@@ -105,17 +105,25 @@ def _resolve_entry_price(entry_method: str, prev_close: float, live_price: float
 
 async def execute_pending_buys(bot_state) -> list:
     """
-    Execute buy orders for all qualified, non-overridden stocks that do not
-    already have an open position and where the portfolio is not full.
+    SOD buy executor — runs at the configured order_execution_time (default ~09:45 ET).
+
+    When A/B test is OFF (default): executes all of today's qualified candidates
+    (same behaviour as before).
+
+    When A/B test is ON: executes only Group B candidates from YESTERDAY's scan.
+    Group B candidates are re-verified with a full fresh criteria check before buying.
+    Candidates that fail re-verify or gap up > 10% are skipped with a reason stored
+    in scan_results.sod_skip_reason.
 
     Returns list of dicts describing each executed buy (for logging / WS broadcast).
     """
     db = bot_state.db
     fetcher = bot_state.fetcher
     config = db.get_config()
+    ab_test_enabled = bool(config.get("ab_test_enabled", False))
 
     if not config.get("auto_execute"):
-        logger.info("Auto-execute is OFF — skipping buy execution")
+        logger.info("Auto-execute is OFF — skipping SOD buy execution")
         return []
 
     today = datetime.now(ET).date()
@@ -132,27 +140,38 @@ async def execute_pending_buys(bot_state) -> list:
     current_count = len(open_positions)
 
     if current_count >= max_positions:
-        logger.info(f"Portfolio full ({current_count}/{max_positions}) — no buys today")
+        logger.info(f"Portfolio full ({current_count}/{max_positions}) — no SOD buys today")
         return []
 
-    # Today's qualified, non-overridden scan results
-    scan_results = db.get_latest_scan_results()
-    candidates = []
-    for r in scan_results:
-        # Normalize scan_date: DB returns datetime.date but JSON paths return ISO string
-        scan_date = r.get("scan_date")
-        if isinstance(scan_date, str):
-            try:
-                scan_date = date_type.fromisoformat(scan_date)
-            except (ValueError, TypeError):
-                scan_date = None
-        if (
-            r.get("qualified")
-            and not r.get("override")
-            and r.get("symbol") not in open_symbols
-            and scan_date == today
-        ):
-            candidates.append(r)
+    if ab_test_enabled:
+        # A/B mode: Group B candidates from yesterday's scan, re-verified fresh
+        from datetime import timedelta
+        yesterday = today - timedelta(days=1)
+        raw_candidates = db.get_sod_group_b_candidates(yesterday)
+        logger.info(f"🅱️ A/B SOD: found {len(raw_candidates)} Group B candidates from {yesterday}")
+        candidates = []
+        for r in raw_candidates:
+            if r.get("symbol") not in open_symbols:
+                candidates.append(r)
+    else:
+        # Normal mode: today's qualified, non-overridden scan results (all groups)
+        scan_results = db.get_latest_scan_results()
+        candidates = []
+        for r in scan_results:
+            # Normalize scan_date
+            scan_date = r.get("scan_date")
+            if isinstance(scan_date, str):
+                try:
+                    scan_date = date_type.fromisoformat(scan_date)
+                except (ValueError, TypeError):
+                    scan_date = None
+            if (
+                r.get("qualified")
+                and not r.get("override")
+                and r.get("symbol") not in open_symbols
+                and scan_date == today
+            ):
+                candidates.append(r)
 
     if not candidates:
         logger.info("No qualified candidates to buy today")
@@ -182,6 +201,7 @@ async def execute_pending_buys(bot_state) -> list:
             break
 
         symbol = result["symbol"]
+        scan_date = result.get("scan_date")
         entry_method = result.get("entry_method") or default_entry_method
         prev_close = float(result.get("price") or 0)
 
@@ -194,6 +214,34 @@ async def execute_pending_buys(bot_state) -> list:
             live_price = float(live_price)
             if math.isnan(live_price) or math.isinf(live_price) or live_price <= 0:
                 live_price = None
+
+        # ── Group B SOD re-verification ──────────────────────────────────────
+        # For Group B candidates, run a full fresh criteria check before buying.
+        # Also skip if the overnight gap-up is > 10% (paying too high a premium).
+        if ab_test_enabled and result.get("ab_group") == "B":
+            scanner = getattr(bot_state, "scanner", None)
+            if scanner is None:
+                logger.warning(f"{symbol}: scanner not available for Group B re-verify — skipping")
+                db.mark_sod_skip(symbol, scan_date, "NO_SCANNER")
+                continue
+            loop = asyncio.get_event_loop()
+            still_qualifies = await loop.run_in_executor(None, lambda s=symbol: scanner.rescan_single(s))
+            if not still_qualifies:
+                logger.info(f"🅱️ {symbol}: Group B re-verify FAILED — skipping (CRITERIA_FAILED)")
+                db.mark_sod_skip(symbol, scan_date, "CRITERIA_FAILED")
+                continue
+            # Gap-up guard: if live price is >10% above yesterday's close, skip
+            GAP_UP_THRESHOLD = 1.10
+            if live_price and prev_close and live_price > prev_close * GAP_UP_THRESHOLD:
+                gap_pct = ((live_price - prev_close) / prev_close) * 100
+                logger.warning(
+                    f"🅱️ {symbol}: Group B gap-up too large (+{gap_pct:.1f}%) — skipping (GAP_UP_EXCESSIVE)"
+                )
+                db.mark_sod_skip(symbol, scan_date, "GAP_UP_EXCESSIVE")
+                continue
+            # Group B always uses market_open for entry
+            entry_method = "market_open"
+            logger.info(f"🅱️ {symbol}: Group B re-verify PASSED — proceeding with market_open buy")
 
         entry_price = _resolve_entry_price(entry_method, prev_close, live_price, limit_premium_pct)
         if entry_price is None or entry_price <= 0:
@@ -319,6 +367,176 @@ async def execute_pending_buys(bot_state) -> list:
 
 # ---------------------------------------------------------------------------
 # Sell execution
+# ---------------------------------------------------------------------------
+
+
+async def execute_eod_buys(bot_state) -> list:
+    """
+    EOD buy executor — runs at the configured eod_order_execution_time (default ~15:50 ET).
+    Only active when ab_test_enabled = true.
+
+    Picks up all Group A candidates flagged with eod_buy_pending=true,
+    buys them immediately using live IB market price, then clears the flag.
+
+    Returns list of dicts describing each executed buy (for logging / WS broadcast).
+    """
+    db = bot_state.db
+    fetcher = bot_state.fetcher
+    config = db.get_config()
+
+    if not config.get("auto_execute"):
+        logger.info("Auto-execute is OFF — skipping EOD buy execution")
+        return []
+
+    if not config.get("ab_test_enabled"):
+        logger.info("A/B test is OFF — skipping EOD buy execution")
+        return []
+
+    max_positions = int(config.get("max_positions") or 16)
+    position_size_usd = float(config.get("position_size_usd") or 10000)
+    stop_loss_pct = float(config.get("stop_loss_pct") or 8.0)
+    paper_trading = bool(config.get("paper_trading", True))
+
+    open_positions = db.get_positions()
+    open_symbols = {p["symbol"] for p in open_positions}
+    current_count = len(open_positions)
+
+    if current_count >= max_positions:
+        logger.info(f"Portfolio full ({current_count}/{max_positions}) — no EOD buys")
+        return []
+
+    candidates = [c for c in db.get_eod_buy_candidates() if c.get("symbol") not in open_symbols]
+    if not candidates:
+        logger.info("No Group A EOD candidates to buy")
+        return []
+
+    # Batch-fetch live prices — EOD buys always use market_open (live IB price)
+    candidate_symbols = [r["symbol"] for r in candidates]
+    live_prices: dict = {}
+    if fetcher.connected:
+        try:
+            loop = asyncio.get_event_loop()
+            live_prices = await loop.run_in_executor(
+                None,
+                lambda: fetcher.fetch_multiple_prices(candidate_symbols)
+            )
+            logger.info(f"📡 EOD: fetched live prices for {len(live_prices)}/{len(candidate_symbols)} symbols")
+        except Exception as e:
+            logger.warning(f"EOD live price fetch failed: {e}")
+    else:
+        logger.warning("IB not connected — cannot execute EOD buys")
+        return []
+
+    executed = []
+    today = datetime.now(ET).date()
+
+    for result in candidates:
+        if current_count >= max_positions:
+            break
+
+        symbol = result["symbol"]
+        scan_date = result.get("scan_date")
+        prev_close = float(result.get("price") or 0)
+
+        live_price = live_prices.get(symbol)
+        if live_price:
+            live_price = float(live_price)
+            if math.isnan(live_price) or math.isinf(live_price) or live_price <= 0:
+                live_price = None
+
+        # EOD buys always use live market price
+        entry_price = live_price
+        if not entry_price or entry_price <= 0:
+            if prev_close > 0:
+                entry_price = prev_close
+                logger.warning(f"🅰️ {symbol}: no live price — falling back to prev_close ${prev_close:.2f}")
+            else:
+                logger.warning(f"🅰️ {symbol}: no price available — skipping EOD buy")
+                continue
+
+        quantity = max(1, int(position_size_usd / entry_price))
+        actual_cost_basis = round(entry_price * quantity, 2)
+        entry_date = today
+
+        try:
+            ib_order = None
+            if fetcher.connected:
+                loop = asyncio.get_event_loop()
+                ib_order = await loop.run_in_executor(
+                    None,
+                    lambda s=symbol, q=quantity: fetcher.place_market_order(s, q, "BUY")
+                )
+                if ib_order is None:
+                    logger.error(f"🅰️ {symbol}: IB EOD order placement failed — skipping")
+                    continue
+            else:
+                logger.warning(f"🅰️ {symbol}: IB not connected — skipping EOD buy")
+                continue
+
+            submitted_price = entry_price
+            raw_fill = ib_order.get("avg_fill_price") or 0.0
+            filled_price = float(raw_fill) if raw_fill and raw_fill > 0 else submitted_price
+            actual_cost_basis = round(filled_price * quantity, 2)
+            stop_loss_price = round(filled_price * (1 - stop_loss_pct / 100), 4)
+
+            trade = {
+                "symbol": symbol,
+                "entry_date": entry_date,
+                "entry_price": filled_price,
+                "submitted_price": submitted_price,
+                "quantity": quantity,
+                "cost_basis": actual_cost_basis,
+            }
+            trade_id = db.create_trade(trade)
+            if trade_id is None:
+                logger.error(f"🅰️ {symbol}: Failed to create trade record")
+                continue
+
+            pos = {
+                "symbol": symbol,
+                "entry_date": entry_date,
+                "entry_price": filled_price,
+                "submitted_price": submitted_price,
+                "quantity": quantity,
+                "stop_loss": stop_loss_price,
+                "cost_basis": actual_cost_basis,
+                "trade_id": trade_id,
+            }
+            if not db.save_position(pos):
+                logger.error(f"🅰️ {symbol}: Failed to save position")
+                continue
+
+            db.update_scan_result_portfolio_flag(symbol, True)
+            db.clear_eod_buy_pending(symbol, scan_date)
+
+            current_count += 1
+            mode = "PAPER" if paper_trading else "LIVE"
+            logger.info(
+                f"✅ 🅰️ [{mode}] EOD BUY {symbol}: {quantity} shares "
+                f"@ fill=${filled_price:.2f} (stop=${stop_loss_price:.2f}, "
+                f"ib_order_id={ib_order.get('order_id')})"
+            )
+
+            executed.append({
+                "symbol": symbol,
+                "quantity": quantity,
+                "entry_price": filled_price,
+                "submitted_price": submitted_price,
+                "entry_method": "market_open_eod",
+                "stop_loss": stop_loss_price,
+                "cost_basis": actual_cost_basis,
+                "ib_order_id": ib_order.get("order_id"),
+                "ib_status": ib_order.get("status"),
+                "mode": mode,
+                "ab_group": "A",
+            })
+
+        except Exception as e:
+            logger.error(f"❌ Error executing EOD buy for {symbol}: {e}")
+
+    return executed
+
+
 # ---------------------------------------------------------------------------
 
 async def execute_pending_exits(bot_state) -> list:
@@ -523,6 +741,62 @@ async def run_order_execution(bot_state) -> None:
 
     except Exception as e:
         logger.error(f"❌ Order execution failed: {e}")
+        bot_state.last_execution = {
+            "started_at": started_at.isoformat(),
+            "finished_at": datetime.now(ET).isoformat(),
+            "buys": 0,
+            "exits": 0,
+            "status": "error",
+            "error": str(e),
+        }
+        raise
+
+    finally:
+        bot_state.execution_running = False
+
+
+async def run_eod_execution(bot_state) -> None:
+    """
+    EOD buy execution for Group A candidates.
+    Called by the eod_scheduler_loop in data_updater.py.
+    Only runs when ab_test_enabled = true.
+    """
+    config = bot_state.db.get_config()
+    if not config.get("auto_execute"):
+        logger.info("Auto-execute is OFF — EOD execution skipped")
+        return
+    if not config.get("ab_test_enabled"):
+        logger.info("A/B test is OFF — EOD execution skipped")
+        return
+
+    logger.info("🔔 EOD Group A buy execution starting...")
+    bot_state.execution_running = True
+    started_at = datetime.now(ET)
+
+    try:
+        buys = await execute_eod_buys(bot_state)
+        if buys:
+            await _broadcast(bot_state, {
+                "type": "orders_executed",
+                "order_type": "buys",
+                "timestamp": datetime.now(ET).isoformat(),
+                "orders": buys,
+            })
+            logger.info(f"✅ EOD: executed {len(buys)} Group A buy order(s)")
+        else:
+            logger.info("EOD: no Group A buys executed")
+
+        bot_state.last_execution = {
+            "started_at": started_at.isoformat(),
+            "finished_at": datetime.now(ET).isoformat(),
+            "buys": len(buys),
+            "exits": 0,
+            "status": "completed",
+        }
+        logger.info("🔔 EOD Group A buy execution complete")
+
+    except Exception as e:
+        logger.error(f"❌ EOD execution failed: {e}")
         bot_state.last_execution = {
             "started_at": started_at.isoformat(),
             "finished_at": datetime.now(ET).isoformat(),

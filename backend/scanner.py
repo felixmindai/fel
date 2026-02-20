@@ -323,11 +323,28 @@ class MinerviniScanner:
                 result = self.calculate_criteria(symbol, bars, current_price, current_volume, config)
                 result['in_portfolio'] = symbol in open_symbols
 
+                # ── A/B test group assignment ────────────────────────────────
+                # Only assign a group to newly-qualified stocks that are not
+                # already in the portfolio (no point testing entry timing on
+                # existing positions).
+                ab_test_enabled = bool(config.get('ab_test_enabled', False))
+                if result['qualified'] and not result['in_portfolio'] and ab_test_enabled:
+                    counter = self.db.increment_ab_counter()
+                    ab_group = 'A' if counter % 2 == 1 else 'B'
+                    result['ab_group'] = ab_group
+                    result['eod_buy_pending'] = (ab_group == 'A')
+                    if ab_group == 'A':
+                        result['action'] = 'BUY_EOD'
+                else:
+                    result['ab_group'] = None
+                    result['eod_buy_pending'] = False
+
                 results.append(result)
                 self.db.save_scan_result(result)
 
                 if result['qualified']:
-                    logger.info(f"✅ {symbol} QUALIFIED — C1={result['criteria_1']} C2={result['criteria_2']} C3={result['criteria_3']} C4={result['criteria_4']} C5={result['criteria_5']} C6={result['criteria_6']} C7={result['criteria_7']} C8={result['criteria_8']}")
+                    ab_label = f" | Group={result.get('ab_group', 'N/A')}" if ab_test_enabled else ""
+                    logger.info(f"✅ {symbol} QUALIFIED — C1={result['criteria_1']} C2={result['criteria_2']} C3={result['criteria_3']} C4={result['criteria_4']} C5={result['criteria_5']} C6={result['criteria_6']} C7={result['criteria_7']} C8={result['criteria_8']}{ab_label}")
 
             except Exception as e:
                 logger.error(f"❌ Error scanning {symbol}: {e}")
@@ -339,6 +356,54 @@ class MinerviniScanner:
 
         return results
     
+    def rescan_single(self, symbol: str) -> bool:
+        """
+        Re-run all 8 criteria for a single symbol using the latest DB bars.
+        No live IB call — uses closing prices from daily_bars.
+        Used by Group B re-verification at SOD before placing a buy order.
+
+        Returns:
+            True if the symbol still qualifies under all 8 criteria, False otherwise.
+        """
+        import math
+        try:
+            config = self.db.get_config()
+            # Check SPY health first (criterion 8)
+            spy_filter_enabled = bool(config.get('spy_filter_enabled', True))
+            if spy_filter_enabled:
+                spy_ok = self.check_spy_health()
+            else:
+                spy_ok = True
+
+            if not spy_ok:
+                logger.info(f"🔄 {symbol} Group B re-verify: SPY filter failed — skip")
+                return False
+
+            bars = self.db.get_daily_bars(symbol, limit=300)
+            if not bars or len(bars) < 250:
+                logger.warning(f"🔄 {symbol} Group B re-verify: insufficient bars ({len(bars)}) — skip")
+                return False
+
+            # get_daily_bars returns DESC — reverse to chronological
+            bars = list(reversed(bars))
+            latest_bar = bars[-1]
+
+            current_price = float(latest_bar['close']) if latest_bar['close'] else 0.0
+            current_volume = int(latest_bar['volume']) if latest_bar['volume'] else 0
+
+            if current_price <= 0:
+                logger.warning(f"🔄 {symbol} Group B re-verify: invalid price — skip")
+                return False
+
+            result = self.calculate_criteria(symbol, bars, current_price, current_volume, config)
+            qualified = bool(result.get('qualified', False))
+            logger.info(f"🔄 {symbol} Group B re-verify: {'PASS ✅' if qualified else 'FAIL ❌'}")
+            return qualified
+
+        except Exception as e:
+            logger.error(f"❌ Error in rescan_single for {symbol}: {e}")
+            return False
+
     def get_qualified_stocks(self, results: List[Dict]) -> List[str]:
         """Get list of symbols that qualified."""
         return [r['symbol'] for r in results if r['qualified']]

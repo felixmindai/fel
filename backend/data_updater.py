@@ -25,7 +25,7 @@ if TYPE_CHECKING:
     pass  # BotState imported at runtime inside functions to avoid circular import
 
 # order_executor is a sibling module in the same backend directory — safe to import at module level
-from order_executor import run_order_execution
+from order_executor import run_order_execution, run_eod_execution
 
 logger = logging.getLogger(__name__)
 
@@ -348,6 +348,56 @@ async def market_open_scheduler_loop(bot_state) -> None:
             last_execution_date = datetime.now(ET).date()
         except Exception as e:
             logger.error(f"Market-open order execution raised an unexpected error: {e}")
+
+        # Buffer to prevent double-fire from clock jitter
+        await asyncio.sleep(120)
+
+
+async def eod_scheduler_loop(bot_state) -> None:
+    """
+    EOD buy execution scheduler for Group A (A/B test).
+
+    Sleeps until the configured eod_order_execution_time (default 15:50 ET),
+    then runs run_eod_execution() to buy all Group A candidates flagged during
+    that day's scanner run.
+
+    Only fires on weekdays. No-ops silently when ab_test_enabled = false.
+    Reads eod_order_execution_time from DB on each iteration so UI changes
+    take effect without a restart.
+    """
+    logger.info("EOD order execution scheduler started")
+
+    last_execution_date = None
+
+    while True:
+        config = bot_state.db.get_config()
+
+        # Sleep quietly when A/B test is disabled — check every 60s for toggle
+        if not config.get("ab_test_enabled"):
+            await asyncio.sleep(60)
+            continue
+
+        exec_time = config.get("eod_order_execution_time") or "15:50"
+        today = datetime.now(ET).date()
+
+        if last_execution_date == today:
+            wait = seconds_until_next_trigger(exec_time, grace_minutes=0)
+        else:
+            wait = seconds_until_next_trigger(exec_time, grace_minutes=10)
+
+        if wait > 2:
+            logger.info(
+                f"Next EOD buy execution scheduled in {wait / 3600:.1f}h "
+                f"(at {exec_time} ET on next weekday)"
+            )
+
+        await asyncio.sleep(wait)
+
+        try:
+            await run_eod_execution(bot_state)
+            last_execution_date = datetime.now(ET).date()
+        except Exception as e:
+            logger.error(f"EOD buy execution raised an unexpected error: {e}")
 
         # Buffer to prevent double-fire from clock jitter
         await asyncio.sleep(120)
