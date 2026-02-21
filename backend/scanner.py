@@ -119,7 +119,7 @@ class MinerviniScanner:
         # criteria 8 can be toggled on/off via SPY Market Health Filter setting)
         all_criteria_met = all([
             criteria_1, criteria_2, criteria_3, criteria_4,
-            criteria_5, criteria_6, criteria_7, criteria_8
+            criteria_5, criteria_6  #, criteria_7, criteria_8
         ])
         
         # Determine action
@@ -327,14 +327,27 @@ class MinerviniScanner:
                 # Only assign a group to newly-qualified stocks that are not
                 # already in the portfolio (no point testing entry timing on
                 # existing positions).
+                # IMPORTANT: check the DB first so we never reassign a group
+                # that was already set on a previous scan cycle.  Without this
+                # guard, increment_ab_counter() fires every 30 s and the group
+                # flips A→B→A on each cycle, destroying the assignment.
                 ab_test_enabled = bool(config.get('ab_test_enabled', False))
                 if result['qualified'] and not result['in_portfolio'] and ab_test_enabled:
-                    counter = self.db.increment_ab_counter()
-                    ab_group = 'A' if counter % 2 == 1 else 'B'
-                    result['ab_group'] = ab_group
-                    result['eod_buy_pending'] = (ab_group == 'A')
-                    if ab_group == 'A':
-                        result['action'] = 'BUY_EOD'
+                    existing_ab = self.db.get_scan_ab_group(result['scan_date'], result['symbol'])
+                    if existing_ab is not None:
+                        # Group already assigned on a prior cycle — preserve it
+                        result['ab_group'] = existing_ab['ab_group']
+                        result['eod_buy_pending'] = existing_ab['eod_buy_pending']
+                        if existing_ab['ab_group'] == 'A':
+                            result['action'] = 'BUY_EOD'
+                    else:
+                        # First time this ticker qualifies today — assign a new group
+                        counter = self.db.increment_ab_counter()
+                        ab_group = 'A' if counter % 2 == 1 else 'B'
+                        result['ab_group'] = ab_group
+                        result['eod_buy_pending'] = (ab_group == 'A')
+                        if ab_group == 'A':
+                            result['action'] = 'BUY_EOD'
                 else:
                     result['ab_group'] = None
                     result['eod_buy_pending'] = False

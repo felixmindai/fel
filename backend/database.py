@@ -476,6 +476,54 @@ class Database:
                 END $$;
             """)
 
+            # bot_config: last SOD execution date (persisted across restarts to prevent grace-window re-fire)
+            cursor.execute("""
+                DO $$ BEGIN
+                    IF NOT EXISTS (
+                        SELECT 1 FROM information_schema.columns
+                        WHERE table_name='bot_config' AND column_name='last_sod_execution_date'
+                    ) THEN
+                        ALTER TABLE bot_config ADD COLUMN last_sod_execution_date DATE DEFAULT NULL;
+                    END IF;
+                END $$;
+            """)
+
+            # bot_config: last SOD configured time at which it fired (used to detect time changes across restarts)
+            cursor.execute("""
+                DO $$ BEGIN
+                    IF NOT EXISTS (
+                        SELECT 1 FROM information_schema.columns
+                        WHERE table_name='bot_config' AND column_name='last_sod_exec_time'
+                    ) THEN
+                        ALTER TABLE bot_config ADD COLUMN last_sod_exec_time VARCHAR(5) DEFAULT NULL;
+                    END IF;
+                END $$;
+            """)
+
+            # bot_config: last EOD execution date (persisted across restarts to prevent grace-window re-fire)
+            cursor.execute("""
+                DO $$ BEGIN
+                    IF NOT EXISTS (
+                        SELECT 1 FROM information_schema.columns
+                        WHERE table_name='bot_config' AND column_name='last_eod_execution_date'
+                    ) THEN
+                        ALTER TABLE bot_config ADD COLUMN last_eod_execution_date DATE DEFAULT NULL;
+                    END IF;
+                END $$;
+            """)
+
+            # bot_config: last EOD configured time at which it fired (used to detect time changes across restarts)
+            cursor.execute("""
+                DO $$ BEGIN
+                    IF NOT EXISTS (
+                        SELECT 1 FROM information_schema.columns
+                        WHERE table_name='bot_config' AND column_name='last_eod_exec_time'
+                    ) THEN
+                        ALTER TABLE bot_config ADD COLUMN last_eod_exec_time VARCHAR(5) DEFAULT NULL;
+                    END IF;
+                END $$;
+            """)
+
             # scan_results: which A/B group this candidate was assigned to
             cursor.execute("""
                 DO $$ BEGIN
@@ -824,8 +872,12 @@ class Database:
                     qualified = EXCLUDED.qualified,
                     action = EXCLUDED.action,
                     in_portfolio = EXCLUDED.in_portfolio,
-                    ab_group = EXCLUDED.ab_group,
-                    eod_buy_pending = EXCLUDED.eod_buy_pending,
+                    ab_group = CASE WHEN scan_results.ab_group IS NULL
+                                    THEN EXCLUDED.ab_group
+                                    ELSE scan_results.ab_group END,
+                    eod_buy_pending = CASE WHEN scan_results.ab_group IS NULL
+                                          THEN EXCLUDED.eod_buy_pending
+                                          ELSE scan_results.eod_buy_pending END,
                     sod_skip_reason = EXCLUDED.sod_skip_reason,
                     created_at = CURRENT_TIMESTAMP
             """, (
@@ -1445,17 +1497,123 @@ class Database:
             cursor.close()
             conn.close()
 
-    def get_eod_buy_candidates(self) -> List[Dict]:
-        """Return scan_results rows flagged for EOD buy (Group A, pending execution)."""
+    def get_eod_buy_candidates(self, scan_date) -> List[Dict]:
+        """Return scan_results rows for a given ET trading date flagged for EOD buy (Group A, pending execution).
+        scan_date must be passed from Python using datetime.now(ET).date() to avoid server timezone mismatch."""
         conn = self.get_connection()
         cursor = conn.cursor(cursor_factory=RealDictCursor)
         try:
             cursor.execute("""
                 SELECT * FROM scan_results
                 WHERE eod_buy_pending = true AND ab_group = 'A' AND qualified = true
+                  AND scan_date = %s
                 ORDER BY created_at
-            """)
+            """, (scan_date,))
             return [dict(row) for row in cursor.fetchall()]
+        finally:
+            cursor.close()
+            conn.close()
+
+    def get_last_sod_execution_date(self):
+        """Return the last date SOD execution ran (DATE or None). Used to prevent grace-window re-fire on restart."""
+        conn = self.get_connection()
+        cursor = conn.cursor()
+        try:
+            cursor.execute("SELECT last_sod_execution_date FROM bot_config WHERE id = 1")
+            row = cursor.fetchone()
+            return row[0] if row else None
+        finally:
+            cursor.close()
+            conn.close()
+
+    def set_last_sod_execution_date(self, date) -> None:
+        """Persist the date SOD execution last ran so restarts won't re-fire within the grace window."""
+        conn = self.get_connection()
+        cursor = conn.cursor()
+        try:
+            cursor.execute(
+                "UPDATE bot_config SET last_sod_execution_date = %s WHERE id = 1",
+                (date,)
+            )
+            conn.commit()
+        finally:
+            cursor.close()
+            conn.close()
+
+    def get_last_eod_execution_date(self):
+        """Return the last date EOD execution ran (DATE or None). Used to prevent grace-window re-fire on restart."""
+        conn = self.get_connection()
+        cursor = conn.cursor()
+        try:
+            cursor.execute("SELECT last_eod_execution_date FROM bot_config WHERE id = 1")
+            row = cursor.fetchone()
+            return row[0] if row else None
+        finally:
+            cursor.close()
+            conn.close()
+
+    def set_last_eod_execution_date(self, date) -> None:
+        """Persist the date EOD execution last ran so restarts won't re-fire within the grace window."""
+        conn = self.get_connection()
+        cursor = conn.cursor()
+        try:
+            cursor.execute(
+                "UPDATE bot_config SET last_eod_execution_date = %s WHERE id = 1",
+                (date,)
+            )
+            conn.commit()
+        finally:
+            cursor.close()
+            conn.close()
+
+    def get_last_sod_exec_time(self) -> Optional[str]:
+        """Return the configured SOD time that was active when SOD last ran (VARCHAR(5) or None)."""
+        conn = self.get_connection()
+        cursor = conn.cursor()
+        try:
+            cursor.execute("SELECT last_sod_exec_time FROM bot_config WHERE id = 1")
+            row = cursor.fetchone()
+            return row[0] if row else None
+        finally:
+            cursor.close()
+            conn.close()
+
+    def set_last_sod_exec_time(self, exec_time: Optional[str]) -> None:
+        """Persist the SOD configured time that was active when SOD last ran."""
+        conn = self.get_connection()
+        cursor = conn.cursor()
+        try:
+            cursor.execute(
+                "UPDATE bot_config SET last_sod_exec_time = %s WHERE id = 1",
+                (exec_time,)
+            )
+            conn.commit()
+        finally:
+            cursor.close()
+            conn.close()
+
+    def get_last_eod_exec_time(self) -> Optional[str]:
+        """Return the configured EOD time that was active when EOD last ran (VARCHAR(5) or None)."""
+        conn = self.get_connection()
+        cursor = conn.cursor()
+        try:
+            cursor.execute("SELECT last_eod_exec_time FROM bot_config WHERE id = 1")
+            row = cursor.fetchone()
+            return row[0] if row else None
+        finally:
+            cursor.close()
+            conn.close()
+
+    def set_last_eod_exec_time(self, exec_time: Optional[str]) -> None:
+        """Persist the EOD configured time that was active when EOD last ran."""
+        conn = self.get_connection()
+        cursor = conn.cursor()
+        try:
+            cursor.execute(
+                "UPDATE bot_config SET last_eod_exec_time = %s WHERE id = 1",
+                (exec_time,)
+            )
+            conn.commit()
         finally:
             cursor.close()
             conn.close()
@@ -1554,6 +1712,27 @@ class Database:
             conn.rollback()
             logger.error(f"❌ Error setting ab_group for {symbol}: {e}")
             return False
+        finally:
+            cursor.close()
+            conn.close()
+
+    def get_scan_ab_group(self, scan_date, symbol: str) -> Optional[Dict]:
+        """Return the ab_group and eod_buy_pending for a (scan_date, symbol) if already assigned, else None.
+
+        Used by the scanner to check whether a group has already been assigned for today before
+        calling increment_ab_counter() again. Prevents the counter from being incremented on every
+        30-second scan cycle for tickers that were assigned on a previous cycle.
+        """
+        conn = self.get_connection()
+        cursor = conn.cursor(cursor_factory=RealDictCursor)
+        try:
+            cursor.execute("""
+                SELECT ab_group, eod_buy_pending
+                FROM scan_results
+                WHERE scan_date = %s AND symbol = %s AND ab_group IS NOT NULL
+            """, (scan_date, symbol.upper()))
+            row = cursor.fetchone()
+            return dict(row) if row else None
         finally:
             cursor.close()
             conn.close()

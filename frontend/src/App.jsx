@@ -416,19 +416,34 @@ function App() {
     </span>
   );
 
-  // Compute execute value string once
-  const execValue = !wsConnected || !status ? null
-    : status.execution_running ? 'Running'
+  // Compute SOD execute value string
+  const sodValue = !wsConnected || !status ? null
+    : status.sod_running ? 'Running'
     : status.last_execution?.status === 'completed'
       ? `Done — ${status.last_execution.buys}B / ${status.last_execution.exits}E @ ${new Date(status.last_execution.finished_at).toLocaleTimeString()}`
     : status.last_execution?.status === 'error'
       ? `Error @ ${new Date(status.last_execution.finished_at).toLocaleTimeString()}`
     : 'Idle';
 
-  const execColor = !status ? 'grey'
-    : status.execution_running ? 'amber'
+  const sodColor = !status ? 'grey'
+    : status.sod_running ? 'amber'
     : status.last_execution?.status === 'completed' ? 'green'
     : status.last_execution?.status === 'error' ? 'red'
+    : 'grey';
+
+  // Compute EOD execute value string
+  const eodValue = !wsConnected || !status ? null
+    : status.eod_running ? 'Running'
+    : status.last_eod_execution?.status === 'completed'
+      ? `Done — ${status.last_eod_execution.buys}B @ ${new Date(status.last_eod_execution.finished_at).toLocaleTimeString()}`
+    : status.last_eod_execution?.status === 'error'
+      ? `Error @ ${new Date(status.last_eod_execution.finished_at).toLocaleTimeString()}`
+    : 'Idle';
+
+  const eodColor = !status ? 'grey'
+    : status.eod_running ? 'amber'
+    : status.last_eod_execution?.status === 'completed' ? 'green'
+    : status.last_eod_execution?.status === 'error' ? 'red'
     : 'grey';
 
   return (
@@ -466,9 +481,14 @@ function App() {
               })()
           }
 
-          {/* Execute — only shown once WS is connected */}
+          {/* SOD Execute — only shown once WS is connected */}
           {wsConnected && status && (
-            <StatusDot color={execColor} label="Execute" value={execValue} />
+            <StatusDot color={sodColor} label="SOD" value={sodValue} />
+          )}
+
+          {/* EOD Execute — only shown when A/B test is enabled */}
+          {wsConnected && status?.config?.ab_test_enabled && (
+            <StatusDot color={eodColor} label="EOD" value={eodValue} />
           )}
 
         </div>

@@ -314,7 +314,7 @@ function ScannerTable({ results, onRefresh, onOverrideToggle, onEntryMethodChang
                       }}
                     >
                       <option value="prev_close">Prev Close ({fmt$(r.price)})</option>
-                      <option value="market_open">Market Open (requires IB real-time data)</option>
+                      <option value="market_open">Market Order Price</option>
                       <option value="limit_1pct">Limit +1% ({fmt$(r.price * 1.01)})</option>
                     </select>
                   )}

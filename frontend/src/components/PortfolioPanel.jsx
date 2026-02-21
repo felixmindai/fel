@@ -221,14 +221,14 @@ function PortfolioPanel({ positions, config, onRefresh, onStatusRefresh, isMarke
     return true;
   });
 
-  // ── Summary totals ──────────────────────────────────────────────────────
-  const totalUnrealizedPnl     = positions.reduce((sum, p) => sum + (Number(p.pnl)        || 0), 0);
+  // ── Summary totals (based on filtered positions) ────────────────────────
+  const totalUnrealizedPnl     = filteredPositions.reduce((sum, p) => sum + (Number(p.pnl)        || 0), 0);
   const totalUnrealizedPnlPct  = (() => {
-    const totalCost = positions.reduce((sum, p) => sum + (Number(p.cost_basis) || 0), 0);
+    const totalCost = filteredPositions.reduce((sum, p) => sum + (Number(p.cost_basis) || 0), 0);
     return totalCost > 0 ? (totalUnrealizedPnl / totalCost) * 100 : 0;
   })();
-  const totalMarketValue       = positions.reduce((sum, p) => sum + (Number(p.current_value) || 0), 0);
-  const totalCostBasis         = positions.reduce((sum, p) => sum + (Number(p.cost_basis)    || 0), 0);
+  const totalMarketValue       = filteredPositions.reduce((sum, p) => sum + (Number(p.current_value) || 0), 0);
+  const totalCostBasis         = filteredPositions.reduce((sum, p) => sum + (Number(p.cost_basis)    || 0), 0);
 
   const unrealizedColor = totalUnrealizedPnl >= 0 ? '#10b981' : '#ef4444';
 

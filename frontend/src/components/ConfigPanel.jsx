@@ -243,7 +243,7 @@ function ConfigPanel({ config, onUpdate, status, dataUpdateStatus, onUpdateDataN
                   onChange={(e) => set('default_entry_method', e.target.value)}
                   style={SELECT_STYLE}>
                   <option value="prev_close">Previous Day Close Price</option>
-                  <option value="market_open">Market Open Price (requires IB real-time data)</option>
+                  <option value="market_open">Market Order Price</option>
                   <option value="limit_1pct">Limit Order Above Close</option>
                 </select>
                 <small style={HINT}>Default entry method applied to newly qualified stocks</small>

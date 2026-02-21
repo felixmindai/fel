@@ -315,7 +315,15 @@ async def market_open_scheduler_loop(bot_state) -> None:
     """
     logger.info("Market-open order execution scheduler started")
 
-    last_execution_date = None  # track date of last fire to prevent same-day re-fires on restart
+    # Load from DB so a restart within the grace window won't re-fire if SOD already ran today.
+    # last_exec_time_config is the configured time that was active when SOD *actually fired* —
+    # stored in DB so we survive restarts correctly without locking out a changed time.
+    last_execution_date = bot_state.db.get_last_sod_execution_date()
+    last_exec_time_config = bot_state.db.get_last_sod_exec_time()
+    # Grace window is only enabled when the configured time actively changed mid-day.
+    # On a fresh start or after a manual reset (last_exec_time_config=NULL, last_execution_date=NULL)
+    # we do NOT want the grace window — just wait for the next scheduled occurrence.
+    _sod_allow_grace = False
 
     while True:
         config = bot_state.db.get_config()
@@ -326,14 +334,21 @@ async def market_open_scheduler_loop(bot_state) -> None:
             continue
         today = datetime.now(ET).date()
 
-        # 10-minute grace window: if backend restarted within 10 min after the
-        # scheduled time, fire immediately — but only if we haven't already
-        # fired today (prevents repeated fires on rapid restarts)
+        # If the configured time changed since last run, reset the same-day guard so
+        # the new time can fire today (e.g. user moves SOD from 09:35 → 11:35 mid-day).
+        if last_exec_time_config != exec_time:
+            logger.info(f"SOD exec time changed ({last_exec_time_config} → {exec_time}) — resetting same-day guard")
+            last_execution_date = None
+            # Only allow grace window when there was a previous known run time
+            # (i.e. user changed the time mid-day). Not on a fresh/reset start.
+            _sod_allow_grace = last_exec_time_config is not None
+
         if last_execution_date == today:
-            # Already ran today — skip grace window, wait for tomorrow's trigger
+            # Already ran today at this time — skip grace window, wait for tomorrow's trigger
             wait = seconds_until_next_trigger(exec_time, grace_minutes=0)
         else:
-            wait = seconds_until_next_trigger(exec_time, grace_minutes=10)
+            grace = 10 if _sod_allow_grace else 0
+            wait = seconds_until_next_trigger(exec_time, grace_minutes=grace)
 
         if wait > 2:
             logger.info(
@@ -346,6 +361,10 @@ async def market_open_scheduler_loop(bot_state) -> None:
         try:
             await run_order_execution(bot_state)
             last_execution_date = datetime.now(ET).date()
+            last_exec_time_config = exec_time  # remember which time we just ran at
+            _sod_allow_grace = True             # future time changes should allow grace window
+            bot_state.db.set_last_sod_execution_date(last_execution_date)
+            bot_state.db.set_last_sod_exec_time(exec_time)  # persist so restart knows which time fired
         except Exception as e:
             logger.error(f"Market-open order execution raised an unexpected error: {e}")
 
@@ -367,7 +386,15 @@ async def eod_scheduler_loop(bot_state) -> None:
     """
     logger.info("EOD order execution scheduler started")
 
-    last_execution_date = None
+    # Load from DB so a restart within the grace window won't re-fire if EOD already ran today.
+    # last_exec_time_config is the configured time that was active when EOD *actually fired* —
+    # stored in DB so we survive restarts correctly without locking out a changed time.
+    last_execution_date = bot_state.db.get_last_eod_execution_date()
+    last_exec_time_config = bot_state.db.get_last_eod_exec_time()
+    # Grace window is only enabled when the configured time actively changed mid-day.
+    # On a fresh start or after a manual reset (last_exec_time_config=NULL, last_execution_date=NULL)
+    # we do NOT want the grace window — just wait for the next scheduled occurrence.
+    _eod_allow_grace = False
 
     while True:
         config = bot_state.db.get_config()
@@ -380,10 +407,21 @@ async def eod_scheduler_loop(bot_state) -> None:
         exec_time = config.get("eod_order_execution_time") or "15:50"
         today = datetime.now(ET).date()
 
+        # If the configured time changed since last run, reset the same-day guard so
+        # the new time can fire today (e.g. user moves EOD from 15:50 → 11:43 mid-day).
+        if last_exec_time_config != exec_time:
+            logger.info(f"EOD exec time changed ({last_exec_time_config} → {exec_time}) — resetting same-day guard")
+            last_execution_date = None
+            # Only allow grace window when there was a previous known run time
+            # (i.e. user changed the time mid-day). Not on a fresh/reset start.
+            _eod_allow_grace = last_exec_time_config is not None
+
+        # last_execution_date is persisted in DB so restarts respect same-day guard.
         if last_execution_date == today:
             wait = seconds_until_next_trigger(exec_time, grace_minutes=0)
         else:
-            wait = seconds_until_next_trigger(exec_time, grace_minutes=10)
+            grace = 10 if _eod_allow_grace else 0
+            wait = seconds_until_next_trigger(exec_time, grace_minutes=grace)
 
         if wait > 2:
             logger.info(
@@ -396,6 +434,10 @@ async def eod_scheduler_loop(bot_state) -> None:
         try:
             await run_eod_execution(bot_state)
             last_execution_date = datetime.now(ET).date()
+            last_exec_time_config = exec_time  # remember which time we just ran at
+            _eod_allow_grace = True             # future time changes should allow grace window
+            bot_state.db.set_last_eod_execution_date(last_execution_date)
+            bot_state.db.set_last_eod_exec_time(exec_time)  # persist so restart knows which time fired
         except Exception as e:
             logger.error(f"EOD buy execution raised an unexpected error: {e}")
 

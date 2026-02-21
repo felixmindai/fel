@@ -147,8 +147,10 @@ class BotState:
         self.latest_results = []
         self.websocket_clients = set()
         self.ib_connected = False
-        self.execution_running = False        # True while run_order_execution is in progress
-        self.last_execution: dict | None = None  # Summary of the most recent execution run
+        self.sod_running = False              # True while SOD (market-open) execution is in progress
+        self.eod_running = False              # True while EOD execution is in progress
+        self.last_execution: dict | None = None      # Summary of the most recent SOD execution run
+        self.last_eod_execution: dict | None = None  # Summary of the most recent EOD execution run
 
 bot_state = BotState()
 
@@ -1074,8 +1076,10 @@ async def websocket_endpoint(websocket: WebSocket):
                         "active_tickers": int(status.get('active_tickers') or 0),
                         "open_positions": int(status.get('open_positions') or 0),
                         "last_scan": int(status.get('last_scan') or 0),
-                        "execution_running": bool(bot_state.execution_running),
+                        "sod_running": bool(bot_state.sod_running),
+                        "eod_running": bool(bot_state.eod_running),
                         "last_execution": bot_state.last_execution,
+                        "last_eod_execution": bot_state.last_eod_execution,
                     }
                 }
                 
@@ -1088,7 +1092,8 @@ async def websocket_endpoint(websocket: WebSocket):
                         "position_size_usd": float(config.get('position_size_usd') or 10000),
                         "paper_trading": bool(config.get('paper_trading', True)),
                         "auto_execute": bool(config.get('auto_execute', False)),
-                        "order_execution_time": config.get('order_execution_time')
+                        "order_execution_time": config.get('order_execution_time'),
+                        "ab_test_enabled": bool(config.get('ab_test_enabled', False))
                     }
                 
                 # Add statistics if available

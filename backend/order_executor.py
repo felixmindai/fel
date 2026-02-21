@@ -408,7 +408,8 @@ async def execute_eod_buys(bot_state) -> list:
         logger.info(f"Portfolio full ({current_count}/{max_positions}) — no EOD buys")
         return []
 
-    candidates = [c for c in db.get_eod_buy_candidates() if c.get("symbol") not in open_symbols]
+    today = datetime.now(ET).date()
+    candidates = [c for c in db.get_eod_buy_candidates(today) if c.get("symbol") not in open_symbols]
     if not candidates:
         logger.info("No Group A EOD candidates to buy")
         return []
@@ -419,11 +420,13 @@ async def execute_eod_buys(bot_state) -> list:
     if fetcher.connected:
         try:
             loop = asyncio.get_event_loop()
-            live_prices = await loop.run_in_executor(
-                None,
-                lambda: fetcher.fetch_multiple_prices(candidate_symbols)
+            live_prices = await asyncio.wait_for(
+                loop.run_in_executor(None, lambda: fetcher.fetch_multiple_prices(candidate_symbols)),
+                timeout=30.0
             )
             logger.info(f"📡 EOD: fetched live prices for {len(live_prices)}/{len(candidate_symbols)} symbols")
+        except asyncio.TimeoutError:
+            logger.warning("EOD live price fetch timed out after 30s — will use prev_close as fallback")
         except Exception as e:
             logger.warning(f"EOD live price fetch failed: {e}")
     else:
@@ -431,7 +434,6 @@ async def execute_eod_buys(bot_state) -> list:
         return []
 
     executed = []
-    today = datetime.now(ET).date()
 
     for result in candidates:
         if current_count >= max_positions:
@@ -465,10 +467,14 @@ async def execute_eod_buys(bot_state) -> list:
             ib_order = None
             if fetcher.connected:
                 loop = asyncio.get_event_loop()
-                ib_order = await loop.run_in_executor(
-                    None,
-                    lambda s=symbol, q=quantity: fetcher.place_market_order(s, q, "BUY")
-                )
+                try:
+                    ib_order = await asyncio.wait_for(
+                        loop.run_in_executor(None, lambda s=symbol, q=quantity: fetcher.place_market_order(s, q, "BUY")),
+                        timeout=90.0
+                    )
+                except asyncio.TimeoutError:
+                    logger.error(f"🅰️ {symbol}: EOD order timed out after 90s — skipping")
+                    continue
                 if ib_order is None:
                     logger.error(f"🅰️ {symbol}: IB EOD order placement failed — skipping")
                     continue
@@ -705,7 +711,7 @@ async def run_order_execution(bot_state) -> None:
         return
 
     logger.info("🔔 Market open order execution starting...")
-    bot_state.execution_running = True
+    bot_state.sod_running = True
     started_at = datetime.now(ET)
 
     try:
@@ -758,7 +764,7 @@ async def run_order_execution(bot_state) -> None:
         raise
 
     finally:
-        bot_state.execution_running = False
+        bot_state.sod_running = False
 
 
 async def run_eod_execution(bot_state) -> None:
@@ -776,7 +782,7 @@ async def run_eod_execution(bot_state) -> None:
         return
 
     logger.info("🔔 EOD Group A buy execution starting...")
-    bot_state.execution_running = True
+    bot_state.eod_running = True
     started_at = datetime.now(ET)
 
     try:
@@ -792,7 +798,7 @@ async def run_eod_execution(bot_state) -> None:
         else:
             logger.info("EOD: no Group A buys executed")
 
-        bot_state.last_execution = {
+        bot_state.last_eod_execution = {
             "started_at": started_at.isoformat(),
             "finished_at": datetime.now(ET).isoformat(),
             "buys": len(buys),
@@ -803,7 +809,7 @@ async def run_eod_execution(bot_state) -> None:
 
     except Exception as e:
         logger.error(f"❌ EOD execution failed: {e}")
-        bot_state.last_execution = {
+        bot_state.last_eod_execution = {
             "started_at": started_at.isoformat(),
             "finished_at": datetime.now(ET).isoformat(),
             "buys": 0,
@@ -814,4 +820,4 @@ async def run_eod_execution(bot_state) -> None:
         raise
 
     finally:
-        bot_state.execution_running = False
+        bot_state.eod_running = False
